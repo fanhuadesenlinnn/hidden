@@ -48,6 +48,67 @@ class StatusBarController: MenuBarItemProvider {
     
     private var isToggle = false
 
+    #if HIDDENBAR_NATIVE_VISIBILITY
+    // Presentation mode (macOS 27, direct build): the capsule, the manual switch
+    // and the mirror trigger. Nil where the native engine does not run.
+    private var presentationController: PresentationController?
+    #endif
+
+    // Reveal without aiming: scroll, click on empty space, pointer shake.
+    private lazy var revealController = RevealController(
+        host: RevealHost(
+            isCollapsed: { [weak self] in self?.isCollapsed ?? false },
+            isOwnMenuOpen: { [weak self] in self?.isShowingOwnMenu ?? false },
+            show: { [weak self] in
+                self?.menuBarEngine.userChangedBar()
+                self?.expandMenubar()
+            },
+            hide: { [weak self] in
+                self?.menuBarEngine.userChangedBar()
+                self?.collapseMenuBar(userInitiated: true)
+            },
+            hideOffMenuBar: { [weak self] in
+                guard let self = self, !self.defersCollapseApartFromPointer else { return }
+                self.menuBarEngine.userChangedBar()
+                self.collapseMenuBar()
+            }),
+        isEnabled: { trigger in
+            switch trigger {
+            case .scroll: return Preferences.revealOnScrollEnabled
+            case .click: return Preferences.revealOnEmptyClickEnabled
+            case .shake: return Preferences.revealOnShakeEnabled
+            }
+        },
+        isSuspended: { [weak self] in self?.isPresenting ?? false },
+        screens: ScreenBand.live)
+    // Tests stand in for presentation mode, which would hold a real restriction.
+    var presentingOverride: Bool?
+    // True while the arrow's context menu is up.
+    private var isShowingOwnMenu = false
+
+    // Presentation mode is on: the reveal gestures and the arrivals question stay
+    // quiet, since the room sees the screen.
+    private var isPresenting: Bool {
+        #if HIDDENBAR_NATIVE_VISIBILITY
+        if let presentingOverride { return presentingOverride }
+        return presentationController?.isOn ?? false
+        #else
+        return false
+        #endif
+    }
+
+    #if HIDDENBAR_NATIVE_VISIBILITY
+    // Asks about apps that add a first icon (Ask Me), from the arrow.
+    private lazy var arrivalsPresenter = ArrivalsPresenter(isSuppressed: { [weak self] in self?.isPresenting ?? false }, openSettings: {
+        Util.showPrefWindow()
+        PreferencesWindowController.shared.select(.menuBarApps)
+    })
+    private var arrivalsObserver: NSObjectProtocol?
+    // The type-to-find palette (direct build, native engine). Built on first use.
+    private var paletteSession: PaletteRevealSession?
+    private lazy var palette: PaletteController = makePalette()
+    #endif
+
     private var hoverMonitor: Any?
     private var pinnedSectionsObserver: NSObjectProtocol?
     private var hoverDwellTimer: Timer?
@@ -80,13 +141,16 @@ class StatusBarController: MenuBarItemProvider {
         restoreRemovedStatusItems()
         setupAlwayHideStatusBar()
         syncHoverToExpand()
+        revealController.sync()
         NotificationCenter.default.addObserver(self, selector: #selector(syncHoverToExpand), name: .prefsChanged, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(syncReveal), name: .prefsChanged, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleScreenParametersChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(updateAutoHide), name: .prefsChanged, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(syncActivationPolicyWithFullStatusBar), name: .useFullStatusBarToggle, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(refreshArrow), name: .stealthExpandIconToggle, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(refreshArrow), name: .arrowStyleChanged, object: nil)
         watchAccessibilityPermission()
+        startArrivals()
         #if DEBUG
         installDebugHooks()
         #endif
@@ -142,11 +206,19 @@ class StatusBarController: MenuBarItemProvider {
         }
     }
     
+    // Same rule as hover: monitors exist only while their pref is on.
+    @objc private func syncReveal() {
+        revealController.sync()
+    }
+
     @objc private func handleScreenParametersChanged() {
         // Re-apply the recomputed length to the LIVE item when collapsed, or a
         // display hot-plug leaves the separator at a stale length (PR #354).
         let wasCollapsed = isCollapsed
         menuBarEngine.invalidateLayout()
+        #if HIDDENBAR_NATIVE_VISIBILITY
+        presentationController?.syncMirror()
+        #endif
         if wasCollapsed && Preferences.areSeparatorsHidden {
             menuBarEngine.updateAlwaysHiddenSection(enabled: Preferences.alwaysHiddenSectionEnabled, separatorHidden: true)
         }
@@ -169,6 +241,14 @@ class StatusBarController: MenuBarItemProvider {
             pinnedSectionsObserver = NotificationCenter.default.addObserver(forName: .pinnedSectionsChanged, object: nil, queue: .main) { [weak native] _ in
                 native?.pinnedSectionsDidChange()
             }
+            native.onUserChangedBar = { [weak self] in
+                #if HIDDENBAR_NATIVE_VISIBILITY
+                self?.paletteSession?.userChangedBar()
+                #endif
+            }
+            #if HIDDENBAR_NATIVE_VISIBILITY
+            presentationController = PresentationController(engine: native, arrowButton: { [weak self] in self?.btnExpandCollapse.button })
+            #endif
         }
     }
 
@@ -182,6 +262,11 @@ class StatusBarController: MenuBarItemProvider {
             return
         }
         if Preferences.areSeparatorsHidden { hideSeparators() }
+        #if HIDDENBAR_NATIVE_VISIBILITY
+        // A display already mirrored at launch starts presentation mode now that
+        // the items are placed, so the first collapse already holds the strict list.
+        presentationController?.syncMirror()
+        #endif
         collapseMenuBar()
     }
 
@@ -220,9 +305,16 @@ class StatusBarController: MenuBarItemProvider {
         // AXPress synthesis carries no NSEvent; the resolver maps nil to .toggle
         // so VoiceOver can operate the bar.
         let optionPressed = ExpandCollapseActionResolver.isOptionPressed(eventFlags: event?.modifierFlags, liveFlags: NSEvent.modifierFlags)
-        switch ExpandCollapseActionResolver.action(eventType: event?.type, optionPressed: optionPressed) {
+        let shiftPressed = ExpandCollapseActionResolver.isShiftPressed(eventFlags: event?.modifierFlags, liveFlags: NSEvent.modifierFlags)
+        switch ExpandCollapseActionResolver.action(eventType: event?.type, optionPressed: optionPressed, shiftPressed: shiftPressed) {
         case .toggle:
+            let wasCollapsed = isCollapsed
             self.expandCollapseIfNeeded()
+            if wasCollapsed { showArrivalsIfWaiting() }
+        case .toggleWithFullBar:
+            // Shift-click expands with the full menu bar for this expansion only;
+            // the stored setting is untouched. Collapsing works as a plain click.
+            self.expandCollapseIfNeeded(fullBarOnce: true)
         case .contextMenu:
             // Right-click opens the same context menu the separator has (#356),
             // making settings reachable from the control everyone clicks.
@@ -264,6 +356,8 @@ class StatusBarController: MenuBarItemProvider {
     // on-screen space, growing downward from below the button.
     private func showContextMenu(from button: NSStatusBarButton) {
         let menu = getContextMenu()
+        isShowingOwnMenu = true
+        defer { isShowingOwnMenu = false }
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: 0), in: button)
     }
     
@@ -296,23 +390,24 @@ class StatusBarController: MenuBarItemProvider {
         menuBarEngine.updateAlwaysHiddenSection(enabled: Preferences.alwaysHiddenSectionEnabled, separatorHidden: true)
     }
     
-    func expandCollapseIfNeeded() {
+    func expandCollapseIfNeeded(fullBarOnce: Bool = false) {
         //prevented rapid click cause icon show many in Dock
         if isToggle {return}
         isToggle = true
+        if fullBarOnce && isCollapsed { fullBarThisExpansion = true }
         menuBarEngine.userChangedBar()
         // Without Accessibility the collapse below hides nothing; show the
         // Preferences, which explain what is missing, instead of a dead click.
         if AccessibilityPermission.shared.arrowClickOpensPreferences(isCollapsed: isCollapsed) {
             Util.showPrefWindow()
         }
-        self.isCollapsed ? self.expandMenubar() : self.collapseMenuBar()
+        self.isCollapsed ? self.expandMenubar() : self.collapseMenuBar(userInitiated: true)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             self?.isToggle = false
         }
     }
     
-    private func collapseMenuBar() {
+    private func collapseMenuBar(userInitiated: Bool = false) {
         guard menuBarEngine.isArrangementValid && !self.isCollapsed else {
             autoCollapseIfNeeded()
             return
@@ -326,7 +421,7 @@ class StatusBarController: MenuBarItemProvider {
             guard let self = self else { return }
             switch result {
             case .collapsed:
-                self.didCollapseMenuBar()
+                self.didCollapseMenuBar(userInitiated: userInitiated)
             case .unavailable:
                 self.didFailToCollapseMenuBar()
             }
@@ -336,11 +431,18 @@ class StatusBarController: MenuBarItemProvider {
     // Nothing was hidden (the engine cannot hide on this system, or is waiting for
     // a permission), so show the bar as expanded, and restore the activation
     // policy in case the UI had already switched to collapsed.
+    // Set by a Shift-click expansion; didCollapseMenuBar clears it.
+    private var fullBarThisExpansion = false
+
+    private var wantsFullBar: Bool {
+        return Preferences.useFullStatusBarOnExpandEnabled || fullBarThisExpansion
+    }
+
     private func didFailToCollapseMenuBar() {
         if let button = btnExpandCollapse.button {
             button.image = Assets.collapseImage
         }
-        if Preferences.useFullStatusBarOnExpandEnabled {
+        if wantsFullBar {
             NSApp.setActivationPolicy(.regular)
         }
     }
@@ -355,14 +457,22 @@ class StatusBarController: MenuBarItemProvider {
         btnExpandCollapse.button?.image = isCollapsed ? collapsedArrowImage : Assets.collapseImage
     }
 
-    private func didCollapseMenuBar() {
+    private func didCollapseMenuBar(userInitiated: Bool) {
         if let button = btnExpandCollapse.button {
             button.image = collapsedArrowImage
         }
-        if Preferences.useFullStatusBarOnExpandEnabled {
+        if wantsFullBar {
             NSApp.setActivationPolicy(.accessory)
             NSApp.deactivate()
         }
+        fullBarThisExpansion = false
+        revealController.barDidCollapse()
+        #if HIDDENBAR_NATIVE_VISIBILITY
+        if userInitiated {
+            SystemOverflowNotice.shared.checkAfterCollapse(arrow: btnExpandCollapse,
+                                                           isCollapsed: { [weak self] in self?.isCollapsed ?? false })
+        }
+        #endif
     }
 
     private func expandMenubar(activatingApp: Bool = true) {
@@ -374,16 +484,19 @@ class StatusBarController: MenuBarItemProvider {
         popupGuard.reset()
         autoCollapseIfNeeded()
         
-        if activatingApp && Preferences.useFullStatusBarOnExpandEnabled {
+        if activatingApp && wantsFullBar {
             NSApp.setActivationPolicy(.regular)
             NSApp.activate(ignoringOtherApps: true)
             
         }
+        #if HIDDENBAR_NATIVE_VISIBILITY
+        presentationController?.barExpanded()
+        #endif
     }
     
     // Expand/collapse skips the policy change when the option is off, so sync it on toggle.
     @objc private func syncActivationPolicyWithFullStatusBar() {
-        let wantsRegular = Preferences.useFullStatusBarOnExpandEnabled && !isCollapsed
+        let wantsRegular = wantsFullBar && !isCollapsed
         let policy: NSApplication.ActivationPolicy = wantsRegular ? .regular : .accessory
         guard NSApp.activationPolicy() != policy else { return }
         let keyWindow = NSApp.isActive ? NSApp.keyWindow : nil
@@ -403,6 +516,22 @@ class StatusBarController: MenuBarItemProvider {
         startTimerToAutoHide()
     }
 
+    // What holds an auto-collapse back besides the pointer sitting in the menu bar.
+    // A popup hanging from the menu bar (#319) defers for up to 10 minutes; the
+    // window list is read last, only when nothing else defers.
+    private var defersCollapseApartFromPointer: Bool {
+        return isPreferencesWindowVisible || arrivalsPromptIsShown || menuBarEngine.defersAutoCollapse || isRevealingForPalette || popupGuard.defersCollapse()
+    }
+
+    // The palette has an app's menu open that it allowed for a moment.
+    private var isRevealingForPalette: Bool {
+        #if HIDDENBAR_NATIVE_VISIBILITY
+        return paletteSession?.isActive ?? false
+        #else
+        return false
+        #endif
+    }
+
     private func startTimerToAutoHide() {
         timer?.invalidate()
         self.timer = Timer.scheduledTimer(withTimeInterval: Preferences.numberOfSecondForAutoHide, repeats: false) { [weak self] _ in
@@ -414,8 +543,7 @@ class StatusBarController: MenuBarItemProvider {
             // from the clock collapses the bar itself once it closes. A popup
             // hanging from the menu bar (#319) defers too, for up to 10 minutes;
             // the window list is read last, only when nothing else defers.
-            if self.isMouseInMenuBar || self.isPreferencesWindowVisible || self.menuBarEngine.defersAutoCollapse
-                || self.popupGuard.defersCollapse() {
+            if self.isMouseInMenuBar || self.defersCollapseApartFromPointer {
                 self.startTimerToAutoHide()
             } else {
                 self.collapseMenuBar()
@@ -429,13 +557,19 @@ class StatusBarController: MenuBarItemProvider {
     private func getContextMenu() -> NSMenu {
         let menu = NSMenu()
 
-        // Notch overflow menu item (only on notch Macs, and only when enabled)
-        if NotchOverflowController.hasNotch && Preferences.notchOverflowEnabled {
+        // Notch overflow menu item (only where icons can hide behind a notch, and only when enabled)
+        if NotchOverflowSupport.isAvailableNow && Preferences.notchOverflowEnabled {
             let overflowItem = NSMenuItem(title: "Show Notch Items".localized, action: #selector(showNotchOverflow), keyEquivalent: "")
             overflowItem.target = self
             menu.addItem(overflowItem)
             menu.addItem(NSMenuItem.separator())
         }
+
+        #if HIDDENBAR_NATIVE_VISIBILITY
+        if let findItem = makeFindHiddenIconMenuItem() {
+            menu.addItem(findItem)
+        }
+        #endif
 
         let prefItem = NSMenuItem(title: "Preferences...".localized, action: #selector(openPreferenceViewControllerIfNeeded), keyEquivalent: "P")
         prefItem.target = self
@@ -451,6 +585,17 @@ class StatusBarController: MenuBarItemProvider {
         let toggleAutoHideItem = NSMenuItem(title: toggleAutoHideTitle.localized, action: #selector(toggleAutoHide), keyEquivalent: "t")
         toggleAutoHideItem.target = self
         menu.addItem(toggleAutoHideItem)
+
+        #if HIDDENBAR_NATIVE_VISIBILITY
+        if let presentation = presentationController {
+            menu.addItem(NSMenuItem.separator())
+            let presentationItem = NSMenuItem(title: presentation.menuTitle, action: #selector(togglePresentationMode), keyEquivalent: "")
+            presentationItem.target = self
+            presentationItem.setShortcut(HotKeyRegistry.shared.shortcut(for: UserDefaults.Key.presentationShortcut))
+            menu.addItem(presentationItem)
+            menu.addItem(NSMenuItem.separator())
+        }
+        #endif
 
         #if !HIDDENBAR_NATIVE_VISIBILITY
         if let macOS27Item = MacOS27Notice.shared.makeMenuItem() {
@@ -484,6 +629,13 @@ class StatusBarController: MenuBarItemProvider {
         Preferences.isAutoHide.toggle()
     }
 
+    #if HIDDENBAR_NATIVE_VISIBILITY
+    // The shortcut, the arrow menu item and the debug hook all run this.
+    @objc func togglePresentationMode() {
+        presentationController?.toggle()
+    }
+    #endif
+
     // Expands the bar with the always-hidden section shown, until the next
     // collapse hides it again. The way back to icons lost there (#242).
     @objc func showEverything() {
@@ -495,6 +647,74 @@ class StatusBarController: MenuBarItemProvider {
     }
 }
 
+
+#if HIDDENBAR_NATIVE_VISIBILITY
+//MARK: - Type-to-find palette
+extension StatusBarController {
+    // The shortcut and the arrow's menu item both land here.
+    func togglePalette() {
+        guard MenuBarEngineFactory.usesNativeEngine() else { return }
+        palette.toggle()
+    }
+
+    @objc private func findHiddenIcon() {
+        palette.show()
+    }
+
+    // The arrow menu's way in, shown only while the shortcut is set: unset, the
+    // feature is off.
+    fileprivate func makeFindHiddenIconMenuItem() -> NSMenuItem? {
+        guard MenuBarEngineFactory.usesNativeEngine(), let shortcut = Preferences.findHiddenIconShortcut else { return nil }
+        let item = NSMenuItem(title: "Find a Hidden Icon...".localized, action: #selector(findHiddenIcon), keyEquivalent: "")
+        item.target = self
+        if let key = shortcut.characters?.lowercased(), key.count == 1 {
+            item.keyEquivalent = key
+            var mask: NSEvent.ModifierFlags = []
+            if shortcut.command { mask.insert(.command) }
+            if shortcut.option { mask.insert(.option) }
+            if shortcut.control { mask.insert(.control) }
+            if shortcut.shift { mask.insert(.shift) }
+            item.keyEquivalentModifierMask = mask
+        }
+        return item
+    }
+
+    /// What the palette reads each time it opens or refreshes. While presenting it
+    /// carries the sensitive apps, which the palette leaves out of its list.
+    func paletteEnvironment() -> PaletteEnvironment {
+        return PaletteEnvironment(accessibilityTrusted: !AccessibilityPermission.shared.isMissing,
+                                  engineAvailable: menuBarEngine.state != .unavailable,
+                                  pinsSections: Preferences.pinnedSectionsEnabled,
+                                  hiddenWhilePresenting: isPresenting ? Preferences.presentationSensitiveApps : [])
+    }
+
+    fileprivate func makePalette() -> PaletteController {
+        let session = PaletteRevealSession(
+            now: { ProcessInfo.processInfo.systemUptime },
+            after: { delay, step in DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: step) },
+            allow: { [weak self] bundle, done in
+                guard let self = self else { return done(.unavailable) }
+                self.menuBarEngine.allowTemporarily(bundle, completion: done)
+            },
+            press: { bundle, done in PaletteItemPresser.press(bundle: bundle, completion: done) },
+            menuIsOpen: { PaletteItemPresser.isMenuOpen(bundle: $0) },
+            appIsActive: { PaletteItemPresser.isActive(bundle: $0) },
+            restore: { [weak self] in self?.menuBarEngine.endTemporaryAllow() })
+        paletteSession = session
+        let host = PaletteHost(
+            environment: { [weak self] in self?.paletteEnvironment() ?? PaletteEnvironment(accessibilityTrusted: false, engineAvailable: false) },
+            arrowFrame: { [weak self] in self?.btnExpandCollapse.button?.window?.frame },
+            open: { bundle, done in session.open(bundle: bundle, completion: done) },
+            move: { section, bundle in PinnedSectionEdits.set(section, for: bundle, in: UserDefaultsPinnedSections()) },
+            openAccessibilitySettings: { AccessibilityPermission.openSystemSettings() },
+            openMenuBarApps: {
+                Util.showPrefWindow()
+                PreferencesWindowController.shared.select(.menuBarApps)
+            })
+        return PaletteController(host: host)
+    }
+}
+#endif
 
 //MARK: - Alway hide feature
 extension StatusBarController {
@@ -569,6 +789,9 @@ extension StatusBarController {
             expandMenubar()
         case "toggle":
             expandCollapseIfNeeded()
+        case "toggle-full-bar-once":
+            // What Shift-click on the arrow runs.
+            expandCollapseIfNeeded(fullBarOnce: true)
         case "toggle-always-hidden":
             // What Option-click on the arrow runs.
             showHideSeparatorsAndAlwayHideArea()
@@ -599,19 +822,86 @@ extension StatusBarController {
         case "reset-pinned":
             // What the Preferences "Reset all to visible" button runs.
             PinnedSectionEdits.resetAllToVisible(in: UserDefaultsPinnedSections())
+        case "drag-lock":
+            // What a Menu Bar Apps row's "Ignore drags" checkbox runs: "<bundle id>=on|off".
+            let parts = (argument ?? "").components(separatedBy: "=")
+            if parts.count == 2 {
+                LiveMenuBarAppsStore().setIgnoresDrags(parts[1] == "on", for: parts[0])
+            }
+        case "settings":
+            // Shows Settings on a tab without activating the app: "<tab>[,light|dark][,<bundle id>]",
+            // the bundle's Menu Bar Apps row scrolled into view; "close" closes it.
+            debugShowSettings(argument ?? "")
         case "show-everything":
             // What the arrow menu's "Show Everything" runs.
             showEverything()
         case "click-clock":
             debugClickClock(pressingWithAX: argument == "ax")
+        case "present":
+            // What the shortcut and the arrow menu item run: "on", "off" or "toggle".
+            #if HIDDENBAR_NATIVE_VISIBILITY
+            switch argument {
+            case "on": presentationController?.start()
+            case "off": presentationController?.stop()
+            default: presentationController?.toggle()
+            }
+            #endif
+        case "reveal-sim":
+            // What a real scroll, click or shake runs: "scroll", "scroll-up", "click" or "shake".
+            revealController.simulate(argument ?? "")
+        case "arrivals-inject":
+            // Asks about a bundle as if a read had just found it: "<bundle id>".
+            if let argument { debugArrivalsInject(argument) }
+        case "arrivals-answer":
+            // What a prompt button runs: "<bundle id>=show|hide".
+            debugArrivalsAnswer(argument ?? "")
+        case "arrivals-prompt":
+            // Opens the prompt under the arrow, as a click on it does while something waits.
+            showArrivalsIfWaiting()
         case "dump-state":
             break
+        case "palette-open", "palette-query", "palette-select", "palette-activate", "palette-close":
+            debugPalette(command, argument: argument)
+        case "dump-inventory":
+            // The menu-bar app catalog as JSON in `out`, instead of the state dump.
+            debugWriteInventory(to: note.userInfo?["out"] as? String)
+            return
         default:
             NSLog("DebugHooks: unknown command \(command)")
         }
         if let out = note.userInfo?["out"] as? String {
             debugWriteState(to: out)
         }
+    }
+
+    // Ordered front without activating, so the user's frontmost app keeps the
+    // keyboard; drawn as the key window, as the snapshots are.
+    private func debugShowSettings(_ argument: String) {
+        let parts = argument.components(separatedBy: ",")
+        let controller = PreferencesWindowController.shared
+        guard let window = controller.window as? SettingsWindow else { return }
+        if parts[0] == "close" {
+            window.drawsAsKey = false
+            return window.close()
+        }
+        if let tab = SettingsTab(rawValue: parts[0]) {
+            controller.select(tab, animate: false)
+        }
+        let appearances: [String: NSAppearance.Name] = ["light": .aqua, "dark": .darkAqua]
+        window.appearance = parts.count > 1 ? appearances[parts[1]].flatMap { NSAppearance(named: $0) } : nil
+        window.drawsAsKey = true
+        window.orderFrontRegardless()
+        if parts.count > 2, let row = Self.debugView(in: window.contentView,
+                                                     identifier: MenuBarAppsSettingsViewController.lockIdentifier(for: parts[2])) {
+            row.scrollToVisible(row.bounds)
+        }
+        window.display()
+    }
+
+    static func debugView(in view: NSView?, identifier: String) -> NSView? {
+        guard let view else { return nil }
+        if view.identifier?.rawValue == identifier { return view }
+        return view.subviews.lazy.compactMap { debugView(in: $0, identifier: identifier) }.first
     }
 
     // A click on the clock without moving the pointer: the mouse-down/up pair is
@@ -659,6 +949,42 @@ extension StatusBarController {
         return nil
     }
 
+    // The palette hooks (direct build): "palette-open" shows it on the display with
+    // the pointer without activating the app, "palette-query <text>" types for you,
+    // "palette-select <bundle id>" moves the selection, "palette-activate
+    // open|keep|hide" is Return, Command-Return or Option-Return, "palette-close".
+    private func debugPalette(_ command: String, argument: String?) {
+        #if HIDDENBAR_NATIVE_VISIBILITY
+        switch command {
+        case "palette-open": palette.show(query: argument ?? "")
+        case "palette-query": palette.setQuery(argument ?? "")
+        case "palette-select": palette.select(bundle: argument ?? "")
+        case "palette-activate":
+            let actions: [String: PaletteKeyAction] = ["open": .open, "keep": .keepShown, "hide": .alwaysHide]
+            palette.perform(actions[argument ?? "open"] ?? .open)
+        default: palette.close()
+        }
+        #else
+        NSLog("DebugHooks: the palette is a direct-build feature")
+        #endif
+    }
+
+    private func debugWriteInventory(to path: String?) {
+        guard let path else { return NSLog("DebugHooks: dump-inventory needs --out") }
+        #if HIDDENBAR_NATIVE_VISIBILITY
+        let data = try? MenuBarItemCatalog.shared.debugJSON()
+        #else
+        // The catalog is a direct-build feature; say so rather than leave the caller waiting.
+        let data = try? JSONSerialization.data(withJSONObject: ["entries": [], "arrivals": [], "available": false] as [String: Any],
+                                               options: [.prettyPrinted, .sortedKeys])
+        #endif
+        do {
+            try (data ?? Data()).write(to: URL(fileURLWithPath: path))
+        } catch {
+            NSLog("DebugHooks: cannot write inventory: \(error.localizedDescription)")
+        }
+    }
+
     private func debugWriteState(to path: String) {
         let policies: [NSApplication.ActivationPolicy: String] = [.regular: "regular", .accessory: "accessory", .prohibited: "prohibited"]
         var state: [String: Any] = [
@@ -666,6 +992,7 @@ extension StatusBarController {
             "state": String(describing: menuBarEngine.state),
             "activationPolicy": policies[NSApp.activationPolicy()] ?? "unknown",
             "useFullStatusBarOnExpand": Preferences.useFullStatusBarOnExpandEnabled,
+            "fullBarThisExpansion": fullBarThisExpansion,
             "alwaysHiddenSectionEnabled": Preferences.alwaysHiddenSectionEnabled,
             "areSeparatorsHidden": Preferences.areSeparatorsHidden,
             "alwaysHiddenItemVisible": btnAlwaysHidden?.isVisible ?? false,
@@ -676,12 +1003,85 @@ extension StatusBarController {
         if let engine = menuBarEngine as? NativeVisibilityEngine {
             state.merge(engine.debugState) { $1 }
         }
+        state.merge(revealController.debugState) { $1 }
+        state.merge(debugArrivalsState) { $1 }
+        #if HIDDENBAR_NATIVE_VISIBILITY
+        state["palette"] = palette.debugState
+        state["paletteSession"] = paletteSession?.debugState ?? ["active": false]
+        #endif
         do {
             let data = try JSONSerialization.data(withJSONObject: state, options: [.prettyPrinted, .sortedKeys])
             try data.write(to: URL(fileURLWithPath: path))
         } catch {
             NSLog("DebugHooks: cannot write state: \(error.localizedDescription)")
         }
+    }
+}
+#endif
+
+//MARK: - Arrivals
+// Kept apart from the rest of the controller: it is the only part of this file
+// the arrivals inbox touches.
+extension StatusBarController {
+    fileprivate func startArrivals() {
+        #if HIDDENBAR_NATIVE_VISIBILITY
+        guard MenuBarEngineFactory.usesNativeEngine() else { return }
+        ArrivalsController.shared.start()
+        arrivalsObserver = NotificationCenter.default.addObserver(forName: .arrivalsChanged, object: nil, queue: .main) { [weak self] _ in
+            self?.syncArrivalsDot()
+        }
+        syncArrivalsDot()
+        #endif
+    }
+
+    fileprivate func syncArrivalsDot() {
+        #if HIDDENBAR_NATIVE_VISIBILITY
+        ArrivalsArrowDot.sync(on: btnExpandCollapse.button, visible: !ArrivalsController.shared.pending.isEmpty)
+        #endif
+    }
+
+    fileprivate func showArrivalsIfWaiting() {
+        #if HIDDENBAR_NATIVE_VISIBILITY
+        arrivalsPresenter.present(from: btnExpandCollapse.button)
+        #endif
+    }
+
+    fileprivate var arrivalsPromptIsShown: Bool {
+        #if HIDDENBAR_NATIVE_VISIBILITY
+        return arrivalsPresenter.isShown
+        #else
+        return false
+        #endif
+    }
+}
+
+#if DEBUG
+extension StatusBarController {
+    fileprivate func debugArrivalsInject(_ bundle: String) {
+        #if HIDDENBAR_NATIVE_VISIBILITY
+        ArrivalsController.shared.debugInject(bundle)
+        #endif
+    }
+
+    fileprivate func debugArrivalsAnswer(_ argument: String) {
+        #if HIDDENBAR_NATIVE_VISIBILITY
+        let parts = argument.components(separatedBy: "=")
+        let answers: [String: ArrivalAnswer] = ["show": .show, "hide": .hide, "always-hide": .alwaysHide]
+        if parts.count == 2, let answer = answers[parts[1]] {
+            ArrivalsController.shared.answer(parts[0], answer)
+        }
+        #endif
+    }
+
+    fileprivate var debugArrivalsState: [String: Any] {
+        #if HIDDENBAR_NATIVE_VISIBILITY
+        var state = ArrivalsController.shared.debugState
+        state["arrivalsPromptShown"] = arrivalsPresenter.isShown
+        state["arrivalsDot"] = btnExpandCollapse.button?.subviews.contains { $0 is ArrivalsArrowDot } ?? false
+        return state
+        #else
+        return [:]
+        #endif
     }
 }
 #endif

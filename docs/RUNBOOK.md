@@ -45,9 +45,59 @@ Standard checks before any release:
   off -> `= 0` (run the binary directly to capture stderr);
 - localization tables stay parseable: `plutil -lint hidden/*.lproj/*.strings`.
 
-When testing on a machine that runs Hidden Bar daily: export the prefs domain
-first (`defaults export com.dwarvesv.minimalbar backup.plist`), quit the
-installed app, test the dev build, then re-import and relaunch.
+### Debug hooks harness (`scripts/hb-cmd`)
+
+A Debug build listens for the distributed notification
+`com.dwarvesv.minimalbar.debug.command` (userInfo `command`, `argument`, `out`;
+`StatusBarController.handleDebugCommand`). `scripts/hb-cmd` is the one sender,
+so nothing is posted by hand and no key or pointer input is involved:
+
+```bash docs/RUNBOOK.md
+scripts/hb-cmd <command> [argument] [--out path] [--timeout seconds] [--dry-run]
+```
+
+- It posts through JXA (`osascript -l JavaScript`, `NSDistributedNotificationCenter`).
+- With `--out` it waits (default 15 s) for the app to write that file, newer than
+  the call, and exits 1 on timeout; exit 2 is a usage or osascript error. A
+  Release build has no hooks and ignores the post, so it times out.
+- `--dry-run` posts nothing: it prints what it would send and still runs the wait,
+  which is how the argument parsing and the timeout path are tested without an app.
+- `dump-state` writes the engine and preference state; `dump-inventory` writes the
+  menu-bar app catalog (`MenuBarItemCatalog`: bundle id, name, section, first-seen
+  time, running state, and the arrivals of the latest read) as JSON to `out`.
+- A feature adds its own commands as new cases in `handleDebugCommand`, prefixed by
+  the feature name.
+- Run it only against a Debug build you own. An unknown command is logged and, with
+  `--out`, answered with the state dump.
+
+When testing on a machine that runs Hidden Bar daily: do not swap by hand. Build the Release-Direct
+app signed with the Developer ID team, then `scripts/install-local.sh --app "Hidden Bar.app"` (it
+backs up the prefs, quits the app, keeps the installed app aside and relaunches), test, and put
+everything back with `scripts/install-local.sh --restore` (see the next section).
+
+## Install a notarized zip on this Mac or another
+
+`scripts/install-local.sh [--host ALIAS [--when-online]] [--check-only] ZIP|--app PATH|--restore [RUN_DIR]`
+installs a `Hidden-Bar-vX.Y.Z-macos.zip` into `/Applications`; `--host` goes over `mini-run`, and
+`--when-online` waits (bounded, `--wait-max`) for a host that is offline. It refuses a zip that
+is not signed by team `W777S7V8TN` or that Gatekeeper does not call `Notarized Developer ID`,
+before touching `/Applications`. It then backs up the prefs domain and moves the replaced app
+into `~/Library/Application Support/HiddenBar-backup/<stamp>/` (nothing is deleted), installs with
+`ditto`, relaunches, and prints a before/after table: version, CDHash, Gatekeeper, and the System
+Events login items named "Hidden Bar", which must all point at `/Applications/Hidden Bar.app`
+(exit 4 flags a stray; remove it by hand). `--check-only` verifies the zip and shows what is
+installed now, changing nothing.
+
+`--app PATH` installs a built `Hidden Bar.app` directory instead (test a branch build against the
+real app). It needs the same Developer ID team as the installed app, skips the notarization
+requirement and says so in the table (signature, bundle id and team are still checked); over `--host`
+the app travels as a zip. Every run writes `meta.txt` into its backup folder with the CDHash of the
+app it set aside. `--restore [RUN_DIR]` (latest run when omitted) quits the app, moves the current
+app into the run folder as `Hidden Bar.replaced.<stamp>.app`, moves the backed-up app back, runs
+`defaults import` on the saved prefs (the replaced prefs stay as `prefs.replaced.<stamp>.plist`),
+relaunches, and checks the restored CDHash equals the recorded one (exit 4 if not). Nothing is
+deleted. Tests: `bash scripts/test-install-local.sh` (fixtures only, never
+the real `/Applications`). Never judge arrow or hiding behaviour on a copy outside `/Applications`.
 
 ## Release
 
@@ -124,6 +174,12 @@ generate_appcast --ed-key-file <(op read 'op://dfoundation-prod/Hidden Bar Spark
 
 # 4. publish: the zip and appcast.xml are both release assets
 gh release upload v1.12 Hidden-Bar-v1.12-macos.zip appcast.xml --clobber -R dwarvesf/hidden
+
+# 5. also upload a copy of the zip named Hidden-Bar-macos.zip, so
+#    releases/latest/download/Hidden-Bar-macos.zip stays stable (a byte-identical
+#    copy; the appcast and the Homebrew cask keep using the versioned name)
+cp Hidden-Bar-v1.12-macos.zip Hidden-Bar-macos.zip
+gh release upload v1.12 Hidden-Bar-macos.zip --clobber -R dwarvesf/hidden
 ```
 
 Check before announcing: `curl -sIL https://github.com/dwarvesf/hidden/releases/latest/download/appcast.xml`

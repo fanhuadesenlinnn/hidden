@@ -8,6 +8,20 @@
 
 import Cocoa
 
+/// Whether the notch overflow feature (menu of icons behind the notch) applies.
+/// macOS 27 never puts an icon behind the notch, it moves them into its own «
+/// button, so there is never anything to list there.
+enum NotchOverflowSupport {
+    static func isAvailable(osMajorVersion: Int, hasNotch: Bool) -> Bool {
+        hasNotch && osMajorVersion < 27
+    }
+
+    static var isAvailableNow: Bool {
+        isAvailable(osMajorVersion: ProcessInfo.processInfo.operatingSystemVersion.majorVersion,
+                    hasNotch: NotchOverflowController.hasNotch)
+    }
+}
+
 /// What the Settings window needs to know about the running app. The live
 /// value comes from the build flags and the real checks; a snapshot or a test
 /// can fix any part of it.
@@ -19,8 +33,12 @@ struct SettingsContext {
     /// Draw the preview with this always-hidden state instead of the stored one.
     var previewAlwaysHidden: Bool?
     var menuBarAppsAvailable: Bool = MenuBarAppsPane.makeViewController != nil
+    /// Snapshots and tests read the find shortcut from here instead of the real preferences.
+    var shortcutFixtureDefaults: UserDefaults?
 
     static var live: SettingsContext { SettingsContext() }
+
+    var showsNotchOverflow: Bool { NotchOverflowSupport.isAvailable(osMajorVersion: osMajorVersion, hasNotch: hasNotch) }
 
     var usesNativeEngine: Bool { build.usesNativeEngine(osMajorVersion: osMajorVersion) }
 
@@ -44,7 +62,7 @@ final class SettingsWindow: NSWindow {
     #endif
 }
 
-/// The slot for the Menu Bar Apps pane. The pinned sections feature (beta)
+/// The slot for the Icons pane. The pinned sections feature (beta)
 /// sets this at launch; until then the tab does not exist.
 enum MenuBarAppsPane {
     static var makeViewController: (() -> NSViewController)?
@@ -77,6 +95,12 @@ class PreferencesWindowController: NSWindowController {
     private let paneHost = NSView()
     private var paneHeight: NSLayoutConstraint?
     static let tabBarHeight: CGFloat = 44
+    /// The tallest the window gets. A pane that needs more scrolls inside it, in
+    /// `paneScroll`, so the window still fits a laptop screen.
+    static let maxWindowHeight: CGFloat = 720
+    /// Holds a pane taller than the window allows; empty otherwise.
+    let paneScroll = NSScrollView()
+    private let paneScrollContent = TopLeftPaneContent()
 
     /// The pane on screen.
     var currentPane: NSViewController { pane(selectedTab) }
@@ -151,17 +175,21 @@ class PreferencesWindowController: NSWindowController {
         // Hidden in the titlebar, but still the window's name in the Window menu and to VoiceOver.
         window.title = tab.titleKey.localized
 
-        let size = controller.view.fittingSize
-        if old !== controller { old.view.removeFromSuperview() }
-        if controller.view.superview !== paneHost {
-            controller.view.translatesAutoresizingMaskIntoConstraints = false
-            paneHost.addSubview(controller.view)
-            NSLayoutConstraint.activate([
-                controller.view.topAnchor.constraint(equalTo: paneHost.topAnchor),
-                controller.view.leadingAnchor.constraint(equalTo: paneHost.leadingAnchor),
-                controller.view.trailingAnchor.constraint(equalTo: paneHost.trailingAnchor),
-            ])
-        }
+        let fitting = controller.view.fittingSize
+        let scrolls = fitting.height > Self.maxWindowHeight - Self.tabBarHeight
+        let size = NSSize(width: fitting.width, height: scrolls ? Self.maxWindowHeight - Self.tabBarHeight : fitting.height)
+        old.view.removeFromSuperview()
+        controller.view.removeFromSuperview()
+        detachPaneScroll()
+        controller.view.translatesAutoresizingMaskIntoConstraints = false
+        let host: NSView = scrolls ? attachPaneScroll(for: controller.view) : controller.view
+        paneHost.addSubview(host)
+        host.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            host.topAnchor.constraint(equalTo: paneHost.topAnchor),
+            host.leadingAnchor.constraint(equalTo: paneHost.leadingAnchor),
+            host.trailingAnchor.constraint(equalTo: paneHost.trailingAnchor),
+        ] + (scrolls ? [host.bottomAnchor.constraint(equalTo: paneHost.bottomAnchor)] : []))
         paneHeight?.constant = size.height
         // Resize around the new pane, keeping the top edge where it was.
         let contentSize = NSSize(width: window.frame.width, height: Self.tabBarHeight + size.height)
@@ -173,6 +201,37 @@ class PreferencesWindowController: NSWindowController {
         (controller as? SettingsPaneController)?.refreshAll()
     }
 
+    /// Puts `pane` in a vertical scroll view the width of the window, pinned to
+    /// the top, and returns the scroll view.
+    private func attachPaneScroll(for pane: NSView) -> NSView {
+        paneScroll.hasVerticalScroller = true
+        paneScroll.hasHorizontalScroller = false
+        paneScroll.autohidesScrollers = true
+        paneScroll.scrollerStyle = .overlay
+        paneScroll.drawsBackground = false
+        paneScroll.borderType = .noBorder
+        paneScroll.documentView = paneScrollContent
+        paneScrollContent.translatesAutoresizingMaskIntoConstraints = false
+        pane.translatesAutoresizingMaskIntoConstraints = false
+        paneScrollContent.addSubview(pane)
+        NSLayoutConstraint.activate([
+            pane.topAnchor.constraint(equalTo: paneScrollContent.topAnchor),
+            pane.bottomAnchor.constraint(equalTo: paneScrollContent.bottomAnchor),
+            pane.leadingAnchor.constraint(equalTo: paneScrollContent.leadingAnchor),
+            pane.trailingAnchor.constraint(equalTo: paneScrollContent.trailingAnchor),
+            paneScrollContent.topAnchor.constraint(equalTo: paneScroll.contentView.topAnchor),
+            paneScrollContent.leadingAnchor.constraint(equalTo: paneScroll.contentView.leadingAnchor),
+            paneScrollContent.trailingAnchor.constraint(equalTo: paneScroll.contentView.trailingAnchor),
+        ])
+        paneScroll.contentView.scroll(to: .zero)
+        return paneScroll
+    }
+
+    private func detachPaneScroll() {
+        paneScroll.removeFromSuperview()
+        paneScroll.documentView = nil
+    }
+
     @objc private func tabClicked(_ sender: NSSegmentedControl) {
         guard tabs.indices.contains(sender.selectedSegment) else { return }
         select(tabs[sender.selectedSegment])
@@ -180,23 +239,12 @@ class PreferencesWindowController: NSWindowController {
 
     // MARK: Keys
 
-    private var general: PreferencesViewController? {
-        currentPane as? PreferencesViewController
-    }
-
-    override func keyDown(with event: NSEvent) {
-        super.keyDown(with: event)
-        if let vc = general, vc.listening {
-            vc.updateGlobalShortcut(event)
-        }
-    }
-
     // Cmd+W closes the prefs window. The main menu has no File > Close item, so
-    // the key equivalent falls through to the responder chain. While the
-    // shortcut recorder is listening it keeps the event, so the user can still
-    // bind Cmd+W as the global hotkey.
+    // the key equivalent falls through to the responder chain. While a shortcut
+    // recorder is listening it keeps the event, so the user can still bind
+    // Cmd+W as a global hotkey.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        let listening = general?.listening ?? false
+        let listening = ShortcutRecorderRow.isRecording
         let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         // Cmd+1...Cmd+5 pick a tab, as in other settings windows.
         if !listening, mods == .command, let digit = event.charactersIgnoringModifiers.flatMap(Int.init),
@@ -213,11 +261,9 @@ class PreferencesWindowController: NSWindowController {
         }
         return super.performKeyEquivalent(with: event)
     }
+}
 
-    override func flagsChanged(with event: NSEvent) {
-        super.flagsChanged(with: event)
-        if let vc = general, vc.listening {
-            vc.updateModiferFlags(event)
-        }
-    }
+/// A view whose origin is at the top left, so a scrolled pane starts at its top.
+class TopLeftPaneContent: NSView {
+    override var isFlipped: Bool { true }
 }

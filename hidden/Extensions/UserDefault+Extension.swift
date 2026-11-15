@@ -11,6 +11,7 @@ import Foundation
 extension UserDefaults {
     enum Key {
         static let globalKey = "globalKey"
+        static let findHiddenIconShortcut = "findHiddenIconShortcut"
         static let numberOfSecondForAutoHide = "numberOfSecondForAutoHide"
         static let isAutoStart = "isAutoStart"
         static let isAutoHide = "isAutoHide"
@@ -21,9 +22,20 @@ extension UserDefaults {
         static let stealthExpandIconEnabled = "stealthExpandIconEnabled"
         static let arrowStyle = "arrowStyle"
         static let hoverToExpand = "hoverToExpand"
+        static let revealOnScrollEnabled = "revealOnScrollEnabled"
+        static let revealOnEmptyClickEnabled = "revealOnEmptyClickEnabled"
+        static let revealOnShakeEnabled = "revealOnShakeEnabled"
         static let notchOverflowEnabled = "notchOverflowEnabled"
         static let pauseHidingForUnkeepableItems = "pauseHidingForUnkeepableItems"
         static let showWholeBarWhenCaptureStarts = "showWholeBarWhenCaptureStarts"
         static let pinnedSectionsEnabled = "pinnedSectionsEnabled"
+        static let newAppDefaultSection = "newAppDefaultSection"
+        static let presentationAutoMirrorEnabled = "presentationAutoMirrorEnabled"
+        static let presentationSensitiveApps = "presentationSensitiveApps"
+        static let presentationShortcut = "presentationShortcut"
+        // Internal: not user-facing, so not in the App Store import whitelist.
+        static let menuBarCatalogFirstSeen = "menuBarCatalogFirstSeen"
+        static let arrivalsPending = "arrivalsPending"
+        static let presentationModeActive = "presentationModeActive"
     }
 }

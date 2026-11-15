@@ -22,8 +22,8 @@ final class AdvancedSettingsViewController: SettingsPaneController {
                     SettingsForm.row("Make room for icons while they are shown".localized,
                                           caption: "Hides the menus of the app you are using while hidden icons are shown, so more icons fit.".localized,
                                           control: fullBar)]
-        // The notch row only where a notch exists, as before.
-        if context.hasNotch {
+        // The notch row only where a notch exists and macOS can put icons behind it.
+        if context.showsNotchOverflow {
             let notch = boundSwitch(UserDefaults.Key.notchOverflowEnabled, read: { Preferences.notchOverflowEnabled },
                                     write: { Preferences.notchOverflowEnabled = $0 })
             rows.append(SettingsForm.row("Reach icons behind the camera notch".localized,
@@ -45,7 +45,7 @@ final class AdvancedSettingsViewController: SettingsPaneController {
                                      read: { Preferences.pinnedSectionsEnabled },
                                      write: { Preferences.pinnedSectionsEnabled = $0 })
             rows.append(SettingsForm.row("Pinned sections (beta)".localized,
-                                         caption: "Keeps each app in the section you pick in Menu Bar Apps, also after it restarts. Applies at the next collapse.".localized,
+                                         caption: "Keeps each app in the section you pick in Icons, also after it restarts. Applies at the next collapse.".localized,
                                          control: pinned))
         }
 

@@ -16,15 +16,8 @@ class AppDelegate: NSObject, NSApplicationDelegate{
     
     var statusBarController = StatusBarController()
 
-    var hotKey: HotKey? {
-        didSet {
-            guard let hotKey = hotKey else { return }
-
-            hotKey.keyDownHandler = { [weak self] in
-                self?.statusBarController.expandCollapseIfNeeded()
-            }
-        }
-    }
+    /// Every global shortcut; a feature adds its own with `register(key:handler:)`.
+    let hotKeys = HotKeyRegistry.shared
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         #if DEBUG
@@ -59,12 +52,18 @@ class AppDelegate: NSObject, NSApplicationDelegate{
     /// UserDefaults; apply the ones with side effects and tell the UI.
     private func applyImportedPreferences() {
         Util.setUpAutoStart(isAutoStart: Preferences.isAutoStart)
-        setupHotKey()
-        for name: Notification.Name in [.prefsChanged, .alwayHideToggle, .useFullStatusBarToggle,
-                                        .stealthExpandIconToggle, .arrowStyleChanged] {
+        hotKeys.reload()
+        for name in Self.importedPreferenceNotifications {
             NotificationCenter.default.post(name: name, object: nil)
         }
     }
+
+    /// What an import tells the rest of the app. The pinned-sections switch and
+    /// table are read through their own notice, not `.prefsChanged`.
+    static let importedPreferenceNotifications: [Notification.Name] = [
+        .prefsChanged, .pinnedSectionsChanged, .alwayHideToggle, .useFullStatusBarToggle,
+        .stealthExpandIconToggle, .arrowStyleChanged,
+    ]
     #endif
 
     /// Hidden Bar is a menu bar utility with no visible window, so launching it a
@@ -72,6 +71,7 @@ class AppDelegate: NSObject, NSApplicationDelegate{
     /// If another instance with the same bundle ID is already running, activate it
     /// and terminate this one instead.
     private func ensureSingleInstance() -> Bool {
+        guard AutoStart.shouldEnforceSingleInstance() else { return true }
         #if HIDDENBAR_NATIVE_VISIBILITY
         // The direct build asks before quitting an App Store copy that is running.
         return AppStoreMigration.shared.resolveOtherRunningCopy()
@@ -128,9 +128,29 @@ class AppDelegate: NSObject, NSApplicationDelegate{
     }
     
     func setupHotKey() {
-        guard let globalKey = Preferences.globalKey else {return}
-        hotKey = HotKey(keyCombo: KeyCombo(carbonKeyCode: globalKey.keyCode, carbonModifiers: globalKey.carbonFlags))
+        hotKeys.register(key: UserDefaults.Key.globalKey, title: "Show or hide icons".localized) { [weak self] in
+            self?.statusBarController.expandCollapseIfNeeded()
+        }
+        #if HIDDENBAR_NATIVE_VISIBILITY
+        Self.registerNativeEngineHotKeys(in: hotKeys, usesNativeEngine: MenuBarEngineFactory.usesNativeEngine(),
+                                         togglePalette: { [weak self] in self?.statusBarController.togglePalette() },
+                                         togglePresentation: { [weak self] in self?.statusBarController.togglePresentationMode() })
+        #endif
     }
+
+    #if HIDDENBAR_NATIVE_VISIBILITY
+    /// The palette and presentation shortcuts exist only where the native engine
+    /// runs. Both are unset by default, so the features are off until recorded.
+    static func registerNativeEngineHotKeys(in hotKeys: HotKeyRegistry, usesNativeEngine: Bool,
+                                            togglePalette: @escaping () -> Void,
+                                            togglePresentation: @escaping () -> Void) {
+        guard usesNativeEngine else { return }
+        hotKeys.register(key: UserDefaults.Key.findHiddenIconShortcut, title: "Find a hidden icon".localized,
+                         handler: togglePalette)
+        hotKeys.register(key: UserDefaults.Key.presentationShortcut, title: "Presentation mode".localized,
+                         handler: togglePresentation)
+    }
+    #endif
     
     func detectLTRLang() {
         // Languages like Arabic uses right to left (RTL) writing direction,
@@ -139,4 +159,13 @@ class AppDelegate: NSObject, NSApplicationDelegate{
         Constant.isUsingLTRLanguage = (NSApplication.shared.userInterfaceLayoutDirection == .leftToRight)
     }
    
+}
+
+extension HotKeyRegistry {
+    /// The app's registry, bound to the HotKey library (a Carbon hot key each).
+    static let shared = HotKeyRegistry { combo, handler in
+        let hotKey = HotKey(keyCombo: KeyCombo(carbonKeyCode: combo.keyCode, carbonModifiers: combo.carbonFlags))
+        hotKey.keyDownHandler = handler
+        return hotKey
+    }
 }

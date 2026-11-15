@@ -1564,6 +1564,7 @@ final class PinnedSectionsTests: XCTestCase {
     private var observed: InMemorySectionMemory!
     private var table: InMemorySectionMemory!
     private var pins = true
+    private var dragLocked: Set<String> = []
 
     override func setUp() {
         super.setUp()
@@ -1574,6 +1575,7 @@ final class PinnedSectionsTests: XCTestCase {
         observed = InMemorySectionMemory()
         table = InMemorySectionMemory()
         pins = true
+        dragLocked = []
     }
 
     private func makeEngine() -> NativeVisibilityEngine {
@@ -1585,7 +1587,8 @@ final class PinnedSectionsTests: XCTestCase {
                                       isLTR: { true },
                                       sectionMemory: observed,
                                       pinnedSections: table,
-                                      pinsSections: { [unowned self] in pins })
+                                      pinsSections: { [unowned self] in pins },
+                                      ignoredDrags: { [unowned self] in dragLocked })
     }
 
     @discardableResult
@@ -1615,6 +1618,32 @@ final class PinnedSectionsTests: XCTestCase {
         // Later collapses with the icon still there keep it visible too.
         engine.expand()
         XCTAssertEqual(collapse(engine), [own, "com.visible"])
+    }
+
+    // Given an app that recreates its status item without relaunching (BitBar, SwiftBar)
+    // When "Ignore drags" is on for it and its icon lands on the hidden side
+    // Then it stays in its pinned section; an app without the flag still follows the move
+    func testAnAppIgnoringDragsKeepsItsSectionWhenItsIconMoves() {
+        table.sections = ["com.visible": .visible, "com.hidden": .hidden]
+        dragLocked = ["com.visible"]
+        let engine = makeEngine()
+        collapse(engine)
+        engine.expand()
+        move("com.visible", to: 1120)
+        move("com.hidden", to: 1450)
+        XCTAssertEqual(collapse(engine), [own, "com.hidden", "com.visible"])
+        XCTAssertEqual(table.sections["com.visible"], .visible, "the flagged app keeps its pinned section")
+        XCTAssertEqual(table.sections["com.hidden"], .visible, "an app without the flag follows the drag")
+    }
+
+    func testTheDragLocksPersistAsABundleList() throws {
+        let suite = "HiddenBarTests.dragLocks.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertEqual(UserDefaultsDragLocks(defaults: defaults).bundles, [])
+        UserDefaultsDragLocks(defaults: defaults).bundles = ["com.b", "com.a"]
+        XCTAssertEqual(UserDefaultsDragLocks(defaults: defaults).bundles, ["com.a", "com.b"])
+        XCTAssertEqual(defaults.stringArray(forKey: UserDefaultsDragLocks.key), ["com.a", "com.b"])
     }
 
     // Without the beta, the same relaunch hides the app (v1.11.2, the drift #366 is about).
@@ -1858,6 +1887,82 @@ final class PinnedSectionsTests: XCTestCase {
         XCTAssertEqual(resolved, ["moved": .visible, "still": .visible, "relaunched": .visible, "new": .visible, "running": .alwaysHidden])
         XCTAssertEqual(table, resolved)
         XCTAssertEqual(observed, ["moved": .visible, "still": .hidden, "relaunched": .hidden, "new": .hidden, "running": .alwaysHidden])
+    }
+
+    func testResolverKeepsTheSectionOfAnAppIgnoringDrags() {
+        var observed: [String: MenuBarSection] = ["locked": .visible, "free": .visible]
+        var table: [String: MenuBarSection] = ["locked": .visible, "free": .visible]
+        let resolved = PinnedSectionResolver.resolve(
+            read: ["locked": .hidden, "free": .hidden, "lockedNew": .hidden],
+            launchedSinceRead: [], ignoringDrags: ["locked", "lockedNew"], observed: &observed, table: &table)
+        XCTAssertEqual(resolved, ["locked": .visible, "free": .hidden, "lockedNew": .hidden],
+                       "a flagged app with no entry still gets its first read as its section")
+        XCTAssertEqual(observed["locked"], .hidden, "the observed position still follows every read")
+    }
+
+    private func isolatedLocks() throws -> (UserDefaultsDragLocks, UserDefaults, String) {
+        let suite = "HiddenBarTests.dragLocks.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        return (UserDefaultsDragLocks(defaults: defaults), defaults, suite)
+    }
+
+    // Given an app with a section and a drag lock, and another app
+    // When Remove runs for the first
+    // Then it leaves both tables, the other app is untouched, and the change is announced
+    func testRemoveDeletesTheAppFromTheTableAndTheDragLocks() throws {
+        let (locks, defaults, suite) = try isolatedLocks()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        table.sections = ["com.gone": .hidden, "com.other": .alwaysHidden]
+        locks.bundles = ["com.gone", "com.other"]
+        let posted = XCTNSNotificationExpectation(name: .pinnedSectionsChanged)
+        PinnedSectionEdits.remove("com.gone", in: table, locks: locks)
+        wait(for: [posted], timeout: 0)
+        XCTAssertEqual(table.sections, ["com.other": .alwaysHidden])
+        XCTAssertEqual(locks.bundles, ["com.other"])
+    }
+
+    // Given a removed app, with the table left empty
+    // When it runs again and a read lists it
+    // Then it is a new app: visible, with no drag lock
+    func testARemovedAppThatRunsAgainComesBackAsANewApp() throws {
+        let (locks, defaults, suite) = try isolatedLocks()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        table.sections = ["com.gone": .alwaysHidden]
+        locks.bundles = ["com.gone"]
+        PinnedSectionEdits.remove("com.gone", in: table, locks: locks)
+        XCTAssertEqual(table.sections, [:])
+
+        var seen: [String: MenuBarSection] = ["com.gone": .alwaysHidden]
+        var pinned = table.sections
+        let resolved = PinnedSectionResolver.resolve(read: ["com.gone": .hidden], launchedSinceRead: ["com.gone"],
+                                                     ignoringDrags: locks.bundles, observed: &seen, table: &pinned)
+        XCTAssertEqual(resolved, ["com.gone": PinnedSectionResolver.newAppSection])
+        XCTAssertEqual(locks.bundles, [])
+    }
+
+    // Given an app that quit after the last complete read
+    // When it is removed, then a read on an overflowing bar borrows from the earlier read
+    // Then the app is not added to the table again
+    func testARemovedAppIsNotReAddedByAnOverflowingRead() throws {
+        let (locks, defaults, suite) = try isolatedLocks()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        inventory.items = [item("com.visible", x: 1400), item("com.gone", x: 1450)]
+        let engine = makeEngine()
+        XCTAssertEqual(collapse(engine), [own, "com.gone", "com.visible"])
+        XCTAssertEqual(table.sections["com.gone"], .visible)
+
+        PinnedSectionEdits.remove("com.gone", in: table, locks: locks)
+        engine.pinnedSectionsDidChange()
+        visibility.succeed(visibility.requests.count - 1)
+        XCTAssertEqual(visibility.requests.last?.bundles, [own, "com.visible"], "the held restriction drops it at once")
+
+        engine.expand()
+        let chevron = MenuBarInventoryItem(bundleIdentifier: "com.apple.MenuBarAgent", frame: CGRect(x: 1500, y: 0, width: 24, height: 24),
+                                           systemIdentifier: "menu-bar-overflow-indicator")
+        inventory.items = [chevron, item("com.visible", x: 1400)]
+        XCTAssertEqual(collapse(engine), [own, "com.visible"])
+        XCTAssertNil(table.sections["com.gone"], "an overflowing read must not bring a removed app back")
+        XCTAssertEqual(table.sections, ["com.visible": .visible])
     }
 }
 
@@ -2445,3 +2550,944 @@ final class NotificationCenterSessionTests: XCTestCase {
         XCTAssertEqual(log.filter { $0 == "collapse" }.count, 1)
     }
 }
+
+// MARK: - Unrestricted-read hook (the app catalog's feed)
+
+final class UnrestrictedReadHookTests: XCTestCase {
+    private var items: FakeItems!
+    private var inventory: FakeInventory!
+    private var visibility: FakeVisibility!
+    private var reads: [(MenuBarLayout, [MenuBarInventoryItem])] = []
+
+    override func setUp() {
+        super.setUp()
+        items = FakeItems()
+        inventory = FakeInventory()
+        inventory.items = [item("com.hidden", x: 1100), item("com.visible", x: 1400)]
+        visibility = FakeVisibility()
+        reads = []
+    }
+
+    private func makeEngine() -> NativeVisibilityEngine {
+        let items = self.items!
+        let engine = NativeVisibilityEngine(items: items, inventory: inventory, visibility: visibility, clock: FakeClock(),
+                                            ownBundleIdentifier: "com.dwarvesv.minimalbar",
+                                            itemFrame: { $0 === items.toggleItem ? separator : alwaysHiddenSeparator },
+                                            displays: { [mainDisplay] },
+                                            isLTR: { true })
+        engine.onUnrestrictedRead = { [unowned self] layout, inventory in self.reads.append((layout, inventory)) }
+        return engine
+    }
+
+    // Given an unrestricted bar, when a collapse reads it
+    // Then the hook gets the layout and the inventory it came from, once
+    func testACollapseReadReachesTheHook() {
+        let engine = makeEngine()
+        engine.collapse { _ in }
+        visibility.succeed(0)
+
+        XCTAssertEqual(reads.count, 1)
+        XCTAssertEqual(reads.first?.0.sections, ["com.hidden": .hidden, "com.visible": .visible])
+        XCTAssertEqual(reads.first?.1.compactMap(\.bundleIdentifier), ["com.hidden", "com.visible"])
+    }
+
+    // Given an app that started (Safari has no menu-bar icon) and an icon the read lists
+    // When a collapse reads the bar
+    // Then the hook's layout names only the listed icon; the engine still gives the started app a section
+    func testAStartedAppWithNoIconIsNotReported() {
+        let engine = makeEngine()
+        engine.applicationLaunched("com.apple.Safari")
+        engine.collapse { _ in }
+        visibility.succeed(0)
+
+        XCTAssertEqual(reads.count, 1)
+        XCTAssertEqual(reads.first?.0.sections, ["com.hidden": .hidden, "com.visible": .visible])
+        XCTAssertEqual(engine.layout?.sections["com.apple.Safari"], .visible, "the engine still holds it for the restriction")
+    }
+
+    // Given a held restriction, when the layout is needed again
+    // Then the cached one stands in and nothing is reported: hidden items read stale
+    func testAHeldRestrictionReportsNoRead() {
+        let engine = makeEngine()
+        engine.collapse { _ in }
+        visibility.succeed(0)
+        engine.updateAlwaysHiddenSection(enabled: true, separatorHidden: true)
+        engine.expand()
+
+        XCTAssertEqual(reads.count, 1)
+    }
+}
+
+// MARK: - The palette lets one app show (type-to-find)
+
+final class PaletteAllowTests: XCTestCase {
+    private let own = "com.dwarvesv.minimalbar"
+    private var items: FakeItems!
+    private var inventory: FakeInventory!
+    private var visibility: FakeVisibility!
+
+    override func setUp() {
+        super.setUp()
+        items = FakeItems()
+        inventory = FakeInventory()
+        inventory.items = [item("com.always", x: 900), item("com.hidden", x: 1100), item("com.visible", x: 1400)]
+        visibility = FakeVisibility()
+    }
+
+    private func makeEngine() -> NativeVisibilityEngine {
+        let items = self.items!
+        return NativeVisibilityEngine(items: items, inventory: inventory, visibility: visibility, clock: FakeClock(),
+                                      ownBundleIdentifier: own,
+                                      itemFrame: { $0 === items.toggleItem ? separator : alwaysHiddenSeparator },
+                                      displays: { [mainDisplay] },
+                                      isLTR: { true })
+    }
+
+    private func collapsed(_ engine: NativeVisibilityEngine) -> FakeAssertion {
+        engine.collapse { _ in }
+        return visibility.succeed(visibility.requests.count - 1)
+    }
+
+    private func allow(_ engine: NativeVisibilityEngine, _ bundle: String) -> PaletteLift? {
+        var lift: PaletteLift?
+        engine.allowTemporarily(bundle) { lift = $0 }
+        return lift
+    }
+
+    // Given a collapsed bar
+    // When the palette allows a hidden app, then ends
+    // Then that one app joins the allow list, and the next activation drops it again
+    func testAllowsOneAppThenPutsTheRestrictionBack() {
+        let engine = makeEngine()
+        let first = collapsed(engine)
+
+        var lift: PaletteLift?
+        engine.allowTemporarily("com.hidden") { lift = $0 }
+        XCTAssertEqual(visibility.requests.count, 2)
+        XCTAssertEqual(visibility.requests[1].bundles, [own, "com.visible", "com.hidden"])
+        XCTAssertNil(lift, "answers once the activation landed")
+        let lifted = visibility.succeed(1)
+        XCTAssertEqual(lift, .lifted)
+        XCTAssertTrue(first.isInvalidated, "the new restriction replaces the old, with no flash of the whole bar")
+        XCTAssertEqual(engine.state, .collapsed, "the bar is still collapsed for everyone else")
+
+        engine.endTemporaryAllow()
+        XCTAssertEqual(visibility.requests.count, 3)
+        XCTAssertEqual(visibility.requests[2].bundles, [own, "com.visible"])
+        visibility.succeed(2)
+        XCTAssertTrue(lifted.isInvalidated)
+    }
+
+    // Given an app the restriction already allows
+    // When the palette allows it
+    // Then nothing changes, and ending changes nothing
+    func testAnAppAlreadyShownNeedsNoActivation() {
+        let engine = makeEngine()
+        _ = collapsed(engine)
+        XCTAssertEqual(allow(engine, "com.visible"), .alreadyShown)
+        engine.endTemporaryAllow()
+        XCTAssertEqual(visibility.requests.count, 1)
+    }
+
+    // Given a bar with nothing hidden
+    // When the palette allows an app
+    // Then it is shown already
+    func testNoRestrictionMeansEverythingIsShown() {
+        let engine = makeEngine()
+        XCTAssertEqual(allow(engine, "com.hidden"), .alreadyShown)
+        XCTAssertEqual(visibility.requests.count, 0)
+    }
+
+    // Given a bar whose collapse is still in flight, or an API that is missing
+    // When the palette allows an app
+    // Then the engine says it cannot, and changes nothing
+    func testCannotLiftWhileCalibratingOrWithoutTheAPI() {
+        let engine = makeEngine()
+        engine.collapse { _ in }
+        XCTAssertEqual(visibility.requests.count, 1)
+        XCTAssertEqual(allow(engine, "com.hidden"), .unavailable, "the collapse has not landed; another activation would cancel it")
+        visibility.succeed(0)
+
+        visibility.isAvailable = false
+        XCTAssertEqual(allow(engine, "com.hidden"), .unavailable)
+        XCTAssertEqual(visibility.requests.count, 1)
+    }
+
+    // Given an allowed app and the user collapsing or expanding the bar meanwhile
+    // When the palette session ends
+    // Then the engine's own newer restriction stands
+    func testAnExpandInBetweenIsNotUndone() {
+        let engine = makeEngine()
+        _ = collapsed(engine)
+        engine.allowTemporarily("com.hidden") { _ in }
+        visibility.succeed(1)
+
+        engine.expand()
+        let requests = visibility.requests.count
+        engine.endTemporaryAllow()
+        XCTAssertEqual(visibility.requests.count, requests, "an expand replaced the restriction; nothing to put back")
+    }
+
+    // Given an allowed app and a launch that re-activates the restriction
+    // When the palette session ends
+    // Then the app that launched stays allowed and only the palette's app is put back
+    func testALaunchInBetweenKeepsItsAppAndTheSessionEndsCleanly() {
+        let engine = makeEngine()
+        _ = collapsed(engine)
+        engine.allowTemporarily("com.hidden") { _ in }
+        visibility.succeed(1)
+
+        engine.applicationLaunched("com.new")
+        XCTAssertEqual(visibility.requests.count, 3)
+        XCTAssertTrue(visibility.requests[2].bundles.contains("com.hidden"), "its open menu stays through the re-activation")
+        visibility.succeed(2)
+        engine.endTemporaryAllow()
+        XCTAssertEqual(visibility.requests.count, 4)
+        XCTAssertEqual(visibility.requests[3].bundles, ["com.dwarvesv.minimalbar", "com.new", "com.visible"])
+    }
+
+    // Given an activation that fails
+    // When the palette allows an app
+    // Then the engine fails open (nothing hidden), says unavailable, and a later collapse hides again
+    func testAFailedLiftFailsOpen() {
+        let engine = makeEngine()
+        _ = collapsed(engine)
+        var lift: PaletteLift?
+        engine.allowTemporarily("com.hidden") { lift = $0 }
+        visibility.fail(1)
+        XCTAssertEqual(lift, .unavailable)
+        XCTAssertEqual(engine.state, .expanded, "nothing is hidden after a failed activation")
+
+        engine.collapse { _ in }
+        XCTAssertEqual(visibility.requests.count, 3, "collapse runs again instead of believing it is collapsed")
+    }
+
+    // Given a user-changed bar
+    // When the engine is told
+    // Then the controller's hook hears it
+    func testUserChangedBarReachesThePaletteHook() {
+        let engine = makeEngine()
+        var heard = 0
+        engine.onUserChangedBar = { heard += 1 }
+        engine.userChangedBar()
+        XCTAssertEqual(heard, 1)
+    }
+}
+// MARK: - Presentation mode: the second allow-list
+
+// Presentation mode holds a strict list through the same restriction. Whatever
+// else happens (a launch, a clock click, a camera, a quit), the list held is
+// always the one computed from the current state.
+final class PresentationModeEngineTests: XCTestCase {
+    private let own = "com.dwarvesv.minimalbar"
+    private var items: FakeItems!
+    private var inventory: FakeInventory!
+    private var visibility: FakeVisibility!
+    private var clock: FakeClock!
+    private var capture: FakeCaptureActivity!
+    private var time: ManualTime!
+    private var terminations: NotificationCenter!
+    private var sensitive: Set<String> = []
+    private var phases: [PresentationPhase] = []
+    private var arrowReadable = true
+
+    override func setUp() {
+        super.setUp()
+        items = FakeItems()
+        inventory = FakeInventory()
+        inventory.items = [item("com.always", x: 900), item("com.hidden", x: 1100), item("com.visible", x: 1400)]
+        visibility = FakeVisibility()
+        clock = FakeClock()
+        capture = FakeCaptureActivity()
+        time = ManualTime()
+        terminations = NotificationCenter()
+        sensitive = []
+        phases = []
+        arrowReadable = true
+    }
+
+    // `expandsWhenCaptureStarts` is the 1.12 option ("show the whole bar when a
+    // camera or microphone turns on"); presentation mode follows it.
+    private func makeEngine(expandsWhenCaptureStarts: Bool = true) -> NativeVisibilityEngine {
+        let items = self.items!
+        let engine = NativeVisibilityEngine(items: items, inventory: inventory, visibility: visibility, clock: clock,
+                                            captureActivity: capture, ownBundleIdentifier: own,
+                                            itemFrame: { [unowned self] in
+                                                arrowReadable ? ($0 === items.toggleItem ? separator : alwaysHiddenSeparator) : nil
+                                            },
+                                            displays: { [mainDisplay] }, isLTR: { true },
+                                            expandsWhenCaptureStarts: { expandsWhenCaptureStarts },
+                                            sensitiveApps: { [unowned self] in sensitive },
+                                            terminationNotifications: terminations)
+        engine.clockNow = { [unowned self] in time.now }
+        engine.scheduleClockStep = { [unowned self] in time.after($0, $1) }
+        // The controller's expand and collapse, without its UI.
+        engine.expandBarForCapture = { [unowned engine] in engine.expand() }
+        engine.expandBar = { [unowned engine] in engine.expand() }
+        engine.collapseBar = { [unowned engine] in engine.collapse { _ in } }
+        engine.onPresentationChange = { [unowned self] in phases.append($0) }
+        return engine
+    }
+
+    @discardableResult
+    private func collapsed(_ engine: NativeVisibilityEngine) -> FakeAssertion {
+        engine.collapse { _ in }
+        return visibility.succeed(visibility.requests.count - 1)
+    }
+
+    private var normalCollapsed: [String] { [own, "com.visible"] }
+    private var strict: [String] { [own] }
+
+    // Given a collapsed bar holding the normal list
+    // When presentation mode starts
+    // Then the strict list (Hidden Bar only) is activated before the old one is dropped
+    func testManualStartSwapsToTheStrictList() {
+        let engine = makeEngine()
+        let normal = collapsed(engine)
+        engine.startPresentation()
+
+        XCTAssertEqual(visibility.requests.last?.bundles, strict)
+        XCTAssertEqual(visibility.requests.last?.systemItems, NativeVisibilityEngine.presentationSystemItems)
+        XCTAssertFalse(normal.isInvalidated, "no flash of the whole bar while swapping")
+        visibility.succeed(visibility.requests.count - 1)
+        XCTAssertTrue(normal.isInvalidated)
+        XCTAssertEqual(engine.currentHold?.bundles, [])
+        XCTAssertEqual(engine.currentPhase(), .presenting)
+        XCTAssertEqual(phases, [.presenting])
+    }
+
+    // Given the strict list held
+    // When an app launches (the path that used to swap the normal list back)
+    // Then nothing is re-activated, and the strict list stays
+    func testAppLaunchWhilePresentingKeepsTheStrictList() {
+        let engine = makeEngine()
+        collapsed(engine)
+        engine.startPresentation()
+        visibility.succeed(visibility.requests.count - 1)
+        let requests = visibility.requests.count
+
+        engine.applicationLaunched("com.new")
+        XCTAssertEqual(visibility.requests.count, requests, "a launch must not re-activate a list")
+        XCTAssertEqual(engine.currentHold?.bundles, [])
+    }
+
+    // Given the strict list held and an app launched meanwhile
+    // When the mode stops
+    // Then the normal list returns, with the app that started
+    func testStopRestoresTheNormalListIncludingNewApps() {
+        let engine = makeEngine()
+        collapsed(engine)
+        engine.startPresentation()
+        visibility.succeed(visibility.requests.count - 1)
+        engine.applicationLaunched("com.new")
+
+        engine.stopPresentation()
+        XCTAssertEqual(visibility.requests.last?.bundles, [own, "com.new", "com.visible"])
+        XCTAssertEqual(visibility.requests.last?.systemItems, NativeVisibilityEngine.systemItemsToKeep)
+        visibility.succeed(visibility.requests.count - 1)
+        XCTAssertEqual(engine.currentPhase(), .off)
+        XCTAssertEqual(phases, [.presenting, .off])
+    }
+
+    // Given a mode that started and stopped with nothing else changing
+    // When comparing the list before and after
+    // Then it is exactly the pre-mode list, system items included
+    func testStopRestoresTheExactPreModeList() {
+        let engine = makeEngine()
+        collapsed(engine)
+        let before = engine.currentHold
+        engine.startPresentation()
+        visibility.succeed(visibility.requests.count - 1)
+        engine.stopPresentation()
+        visibility.succeed(visibility.requests.count - 1)
+        XCTAssertEqual(engine.currentHold, before)
+    }
+
+    // Given the strict list held and sensitive apps chosen
+    // When the user clicks the arrow
+    // Then the hidden section shows except the sensitive apps, also one in the visible section
+    func testExpandedWhilePresentingKeepsSensitiveAppsHidden() {
+        let engine = makeEngine()
+        collapsed(engine)
+        engine.startPresentation()
+        visibility.succeed(visibility.requests.count - 1)
+
+        // No always-hidden separator here, so that app counts as hidden.
+        sensitive = ["com.always", "com.hidden", "com.visible"]
+        engine.expand()
+        XCTAssertEqual(visibility.requests.last?.bundles, strict, "every listed app is sensitive")
+        visibility.succeed(visibility.requests.count - 1)
+
+        sensitive = ["com.always", "com.hidden"]
+        engine.sensitiveAppsDidChange()
+        XCTAssertEqual(visibility.requests.last?.bundles, [own, "com.visible"])
+        visibility.succeed(visibility.requests.count - 1)
+
+        sensitive = []
+        engine.sensitiveAppsDidChange()
+        XCTAssertEqual(visibility.requests.last?.bundles, [own, "com.always", "com.hidden", "com.visible"])
+        visibility.succeed(visibility.requests.count - 1)
+        XCTAssertEqual(engine.state, .expanded)
+        XCTAssertNotNil(engine.currentHold, "the expanded bar still holds a list while presenting")
+
+        // A second click hides everything again.
+        collapsed(engine)
+        XCTAssertEqual(visibility.requests.last?.bundles, strict)
+    }
+
+    // Given no presentation
+    // When the sensitive apps change (or any preference does)
+    // Then the normal hold is left alone
+    func testSensitiveAppsChangingOutsideAPresentationChangesNothing() {
+        let engine = makeEngine()
+        collapsed(engine)
+        let requests = visibility.requests.count
+        sensitive = ["com.visible"]
+        engine.sensitiveAppsDidChange()
+        XCTAssertEqual(visibility.requests.count, requests)
+        XCTAssertEqual(engine.currentHold?.bundles, ["com.visible"])
+    }
+
+    // Given the expanded presenting list with an app launched meanwhile
+    // When it is reconciled
+    // Then the sensitive app is still left out
+    func testLaunchWhileExpandedPresentingStillExcludesSensitiveApps() {
+        sensitive = ["com.hidden"]
+        let engine = makeEngine()
+        collapsed(engine)
+        engine.startPresentation()
+        visibility.succeed(visibility.requests.count - 1)
+        engine.expand()
+        visibility.succeed(visibility.requests.count - 1)
+        engine.applicationLaunched("com.hidden")
+        engine.applicationLaunched("com.new")
+        XCTAssertEqual(engine.currentHold?.bundles.contains("com.hidden"), false)
+        XCTAssertFalse(visibility.requests.last?.bundles.contains("com.hidden") ?? true)
+    }
+
+    // Given the strict list held
+    // When the clock is clicked
+    // Then nothing lifts and nothing expands
+    func testClockClickWhilePresentingDoesNothing() {
+        let engine = makeEngine()
+        collapsed(engine)
+        engine.startPresentation()
+        let held = visibility.succeed(visibility.requests.count - 1)
+        let requests = visibility.requests.count
+
+        clock.click()
+        XCTAssertEqual(visibility.requests.count, requests)
+        XCTAssertTrue(clock.presses.isEmpty)
+        XCTAssertFalse(held.isInvalidated)
+        XCTAssertEqual(engine.state, .collapsed)
+    }
+
+    // Given the strict list held
+    // When a camera turns on
+    // Then the restriction lifts at once and the bar shows
+    func testCaptureStartLiftsTheRestrictionAtOnce() {
+        let engine = makeEngine()
+        collapsed(engine)
+        engine.startPresentation()
+        let held = visibility.succeed(visibility.requests.count - 1)
+
+        capture.set(true)
+        XCTAssertTrue(held.isInvalidated)
+        XCTAssertEqual(engine.state, .expanded)
+        XCTAssertNil(engine.currentHold)
+        XCTAssertEqual(phases, [.presenting, .paused])
+    }
+
+    // Given a pause for the camera
+    // When the camera turns off
+    // Then hiding resumes only after the quiet period, with the strict list
+    func testResumesTwoAndAHalfSecondsAfterCaptureEnds() {
+        let engine = makeEngine()
+        collapsed(engine)
+        engine.startPresentation()
+        visibility.succeed(visibility.requests.count - 1)
+        capture.set(true)
+        let requests = visibility.requests.count
+
+        capture.set(false)
+        time.advance(to: 2.4)
+        XCTAssertEqual(visibility.requests.count, requests, "not yet")
+        XCTAssertEqual(engine.state, .expanded)
+        time.advance(to: 2.7)
+        XCTAssertEqual(visibility.requests.last?.bundles, strict)
+        visibility.succeed(visibility.requests.count - 1)
+        XCTAssertEqual(engine.state, .collapsed)
+        XCTAssertEqual(phases, [.presenting, .paused, .presenting])
+    }
+
+    // Given a microphone that flaps
+    // When it stops and starts again inside the quiet period
+    // Then the bar does not flap: it stays shown until a full quiet period
+    func testFlappingCaptureNeverHidesEarly() {
+        let engine = makeEngine()
+        collapsed(engine)
+        engine.startPresentation()
+        visibility.succeed(visibility.requests.count - 1)
+        capture.set(true)
+        let requests = visibility.requests.count
+
+        time.advance(to: 1)
+        capture.set(false)
+        time.advance(to: 2)
+        capture.set(true)
+        time.advance(to: 3)
+        capture.set(false)
+        time.advance(to: 5)
+        XCTAssertEqual(visibility.requests.count, requests, "1 s of quiet is not enough")
+        time.advance(to: 6)
+        XCTAssertEqual(visibility.requests.last?.bundles, strict)
+    }
+
+    // Given capture already running (a call under way), the switch on
+    // When the mode starts
+    // Then the strict list is held at once and nothing is lifted; a fresh capture start afterwards lifts once
+    func testStartWhileCaptureIsActiveStartsHidden() {
+        capture.isActive = true
+        let engine = makeEngine()
+        collapsed(engine)
+        engine.startPresentation()
+
+        XCTAssertEqual(visibility.requests.last?.bundles, strict)
+        let held = visibility.succeed(visibility.requests.count - 1)
+        XCTAssertEqual(engine.currentPhase(), .presenting)
+        XCTAssertEqual(engine.state, .collapsed)
+        XCTAssertFalse(held.isInvalidated)
+        XCTAssertEqual(phases, [.presenting])
+
+        capture.set(false)
+        capture.set(true)
+        XCTAssertTrue(held.isInvalidated, "a fresh start while presenting lifts once")
+        XCTAssertEqual(engine.currentPhase(), .paused)
+        XCTAssertEqual(phases, [.presenting, .paused])
+    }
+
+    // Given a bar with no layout to read (Accessibility off)
+    // When the mode starts and the user clicks the arrow
+    // Then the strict list still holds, and the arrow does not reveal everything
+    func testMissingLayoutWhilePresentingNeverReveals() {
+        inventory.isAuthorized = false
+        let engine = makeEngine()
+        engine.startPresentation()
+        XCTAssertEqual(visibility.requests.last?.bundles, strict, "the strict list needs no read")
+        visibility.succeed(visibility.requests.count - 1)
+        XCTAssertEqual(engine.state, .collapsed)
+
+        engine.expand()
+        XCTAssertEqual(visibility.requests.last?.bundles, strict)
+        let swapped = visibility.succeed(visibility.requests.count - 1)
+        XCTAssertFalse(swapped.isInvalidated)
+        XCTAssertNotNil(engine.currentHold)
+        XCTAssertEqual(inventory.authorizationRequests, 0)
+    }
+
+    // Given two activations in flight (strict, then the normal list again)
+    // When they complete out of order
+    // Then the older one is invalidated and the newer one is the hold
+    func testOutOfOrderCompletionsNeverLeaveTheWrongListHeld() {
+        let engine = makeEngine()
+        collapsed(engine)
+        engine.startPresentation()
+        let strictIndex = visibility.requests.count - 1
+        engine.stopPresentation()
+        let normalIndex = visibility.requests.count - 1
+        XCTAssertEqual(visibility.requests[strictIndex].bundles, strict)
+        XCTAssertEqual(visibility.requests[normalIndex].bundles, normalCollapsed)
+
+        let newer = visibility.succeed(normalIndex)
+        let older = visibility.succeed(strictIndex)
+        XCTAssertTrue(older.isInvalidated, "the superseded strict list must not land")
+        XCTAssertFalse(newer.isInvalidated)
+        XCTAssertEqual(engine.currentHold?.bundles, ["com.visible"])
+    }
+
+    // Given the strict list requested
+    // When macOS refuses it
+    // Then the restriction fails open and the phase says it could not hide
+    func testRefusedStrictListFailsOpen() {
+        let engine = makeEngine()
+        let held = collapsed(engine)
+        engine.startPresentation()
+        visibility.fail(visibility.requests.count - 1)
+
+        XCTAssertNil(engine.currentHold)
+        XCTAssertTrue(held.isInvalidated)
+        XCTAssertEqual(engine.state, .expanded)
+        XCTAssertEqual(phases.last, .couldNotHide)
+    }
+
+    // Given the strict list held
+    // When the app quits
+    // Then the restriction is released explicitly
+    func testQuitLiftsTheRestriction() {
+        let engine = makeEngine()
+        collapsed(engine)
+        engine.startPresentation()
+        let held = visibility.succeed(visibility.requests.count - 1)
+
+        terminations.post(name: NSApplication.willTerminateNotification, object: nil)
+        XCTAssertTrue(held.isInvalidated)
+        XCTAssertNil(engine.currentHold)
+    }
+
+    // Given a mirrored display
+    // When mirroring starts and stops
+    // Then the strict list is held for as long as it lasts
+    func testMirrorTriggerHoldsAndLifts() {
+        let engine = makeEngine()
+        collapsed(engine)
+        engine.presentationMirrorChanged(PresentationMirror(displayName: "TV"))
+        XCTAssertEqual(visibility.requests.last?.bundles, strict)
+        visibility.succeed(visibility.requests.count - 1)
+        XCTAssertEqual(engine.presentationCause, .mirroring(displayName: "TV"))
+
+        engine.presentationMirrorChanged(nil)
+        XCTAssertEqual(visibility.requests.last?.bundles, normalCollapsed)
+        visibility.succeed(visibility.requests.count - 1)
+        XCTAssertFalse(engine.isPresentationOn)
+    }
+
+    // Given a manual start during mirroring
+    // When mirroring stops
+    // Then the strict list stays held
+    func testMirrorEndingDoesNotEndAManualStart() {
+        let engine = makeEngine()
+        collapsed(engine)
+        engine.presentationMirrorChanged(PresentationMirror(displayName: "TV"))
+        engine.startPresentation()
+        visibility.succeed(visibility.requests.count - 1)
+        let requests = visibility.requests.count
+
+        engine.presentationMirrorChanged(nil)
+        XCTAssertEqual(visibility.requests.count, requests)
+        XCTAssertTrue(engine.isPresentationOn)
+        XCTAssertEqual(engine.currentHold?.bundles, [])
+    }
+
+    // Given an expanded, unrestricted bar
+    // When the mode starts
+    // Then the bar collapses under the strict list
+    func testStartWhileExpandedCollapsesTheBar() {
+        let engine = makeEngine()
+        engine.startPresentation()
+        XCTAssertEqual(engine.state, .calibrating)
+        XCTAssertEqual(visibility.requests.last?.bundles, strict)
+        visibility.succeed(visibility.requests.count - 1)
+        XCTAssertEqual(engine.state, .collapsed)
+    }
+
+    // Given the expanded bar kept by the always-hidden section, and a click on the clock
+    // When presentation mode starts during the lift, and the lift ends
+    // Then the restore holds what is wanted now (sensitive app left out), not the lifted list
+    func testClockLiftRestoreFollowsAPresentationStartedDuringIt() {
+        sensitive = ["com.hidden"]
+        let engine = makeEngine()
+        engine.scheduleRestoreWatchdog = { _, _ in }
+        engine.updateAlwaysHiddenSection(enabled: true, separatorHidden: true)
+        visibility.succeed(visibility.requests.count - 1)
+        clock.click()
+        XCTAssertEqual(clock.presses.count, 1, "the restriction is lifted for the press")
+        engine.collapseBar = {}
+        engine.startPresentation()
+
+        clock.presses[0].completion()
+        XCTAssertEqual(visibility.requests.last?.bundles, [own, "com.visible"])
+        XCTAssertEqual(visibility.requests.last?.systemItems, NativeVisibilityEngine.presentationSystemItems)
+    }
+
+    // Given a presentation and an arrow whose position cannot be read
+    // When the bar collapses
+    // Then the strict list is held anyway, and the capsule does not say it could not hide
+    func testCollapseWithoutALayoutStillHoldsTheStrictList() {
+        arrowReadable = false
+        let engine = makeEngine()
+        engine.startPresentation()
+        XCTAssertEqual(visibility.requests.last?.bundles, strict)
+        visibility.succeed(visibility.requests.count - 1)
+        XCTAssertEqual(engine.state, .collapsed)
+        XCTAssertEqual(phases, [.presenting])
+    }
+
+    // Given the pause for a camera that is still on
+    // When the user collapses the bar (the normal collapse)
+    // Then presentation hides again at once, with the strict list, and stays so while capture continues
+    func testCollapseDuringThePauseHidesAgain() {
+        let engine = makeEngine()
+        collapsed(engine)
+        engine.startPresentation()
+        visibility.succeed(visibility.requests.count - 1)
+        capture.set(true)
+        XCTAssertEqual(engine.state, .expanded)
+        let requests = visibility.requests.count
+
+        var results: [CollapseResult] = []
+        engine.collapse { results.append($0) }
+        XCTAssertEqual(visibility.requests.count, requests + 1)
+        XCTAssertEqual(visibility.requests.last?.bundles, strict)
+        visibility.succeed(visibility.requests.count - 1)
+        XCTAssertEqual(results, [.collapsed])
+        XCTAssertEqual(engine.state, .collapsed)
+        XCTAssertEqual(phases, [.presenting, .paused, .presenting])
+
+        time.advance(to: 60)
+        XCTAssertEqual(engine.currentPhase(), .presenting, "capture still on: no second pause")
+        XCTAssertEqual(visibility.requests.count, requests + 1)
+    }
+
+    // Given a camera that turns on while presenting, the switch on
+    // When the user presses "Hide again", and capture later ends and starts again
+    // Then it lifts once, hides on the user's word with capture still on, and a new start lifts again
+    func testSwitchOnLiftsOnceAndTheUserResumesDuringCapture() {
+        let engine = makeEngine()
+        collapsed(engine)
+        engine.startPresentation()
+        let held = visibility.succeed(visibility.requests.count - 1)
+
+        capture.set(true)
+        XCTAssertTrue(held.isInvalidated, "the start lifts once")
+        XCTAssertEqual(engine.currentPhase(), .paused)
+        XCTAssertNil(engine.currentHold)
+
+        engine.resumePresentationHiding()
+        XCTAssertEqual(visibility.requests.last?.bundles, strict, "hides again with the camera still on")
+        visibility.succeed(visibility.requests.count - 1)
+        XCTAssertEqual(engine.currentPhase(), .presenting)
+        XCTAssertEqual(engine.state, .collapsed)
+        XCTAssertEqual(phases, [.presenting, .paused, .presenting])
+
+        time.advance(to: 30)
+        capture.set(false)
+        time.advance(to: 40)
+        XCTAssertEqual(phases, [.presenting, .paused, .presenting], "capture ending changes nothing after a user resume")
+        let requests = visibility.requests.count
+        capture.set(true)
+        XCTAssertEqual(engine.currentPhase(), .paused, "the next start lifts again")
+        XCTAssertEqual(visibility.requests.count, requests)
+        XCTAssertNil(engine.currentHold)
+    }
+
+    // Given the switch off
+    // When a camera turns on while presenting, or is already on when the mode starts
+    // Then nothing is lifted and the strict list stays: presentation never pauses
+    func testSwitchOffNeverPausesPresentation() {
+        let engine = makeEngine(expandsWhenCaptureStarts: false)
+        collapsed(engine)
+        engine.startPresentation()
+        let held = visibility.succeed(visibility.requests.count - 1)
+
+        capture.set(true)
+        XCTAssertFalse(held.isInvalidated)
+        XCTAssertEqual(engine.state, .collapsed)
+        XCTAssertEqual(engine.currentHold?.bundles, [])
+        XCTAssertEqual(phases, [.presenting])
+
+        engine.stopPresentation()
+        visibility.succeed(visibility.requests.count - 1)
+        capture.isActive = true
+        engine.startPresentation()
+        XCTAssertEqual(visibility.requests.last?.bundles, strict, "already on at start: still held")
+        XCTAssertEqual(engine.currentPhase(), .presenting)
+    }
+
+    // Given a presentation, an app the palette allowed, a clock click, then the microphone on and off
+    // When everything has settled
+    // Then the hold is the strict list alone: the palette's app went with the lift and does not return
+    func testPresentingPaletteAllowClockClickAndMicrophoneEndsOnTheStrictList() {
+        let engine = makeEngine()
+        collapsed(engine)
+        engine.startPresentation()
+        visibility.succeed(visibility.requests.count - 1)
+
+        var lifts: [PaletteLift] = []
+        engine.allowTemporarily("com.hidden") { lifts.append($0) }
+        XCTAssertEqual(visibility.requests.last?.bundles, [own, "com.hidden"])
+        visibility.succeed(visibility.requests.count - 1)
+        XCTAssertEqual(lifts, [.lifted])
+
+        let requests = visibility.requests.count
+        clock.click()
+        XCTAssertEqual(visibility.requests.count, requests, "a clock click does nothing while presenting")
+        XCTAssertTrue(clock.presses.isEmpty)
+
+        capture.set(true)
+        XCTAssertNil(engine.currentHold, "the lift for the microphone drops every list")
+        time.advance(to: 10)
+        capture.set(false)
+        time.advance(to: 13)
+        XCTAssertEqual(visibility.requests.last?.bundles, strict)
+        visibility.succeed(visibility.requests.count - 1)
+
+        XCTAssertEqual(engine.state, .collapsed)
+        XCTAssertEqual(engine.currentPhase(), .presenting)
+        XCTAssertEqual(engine.currentHold, NativeHold(systemItems: NativeVisibilityEngine.presentationSystemItems, bundles: []))
+        XCTAssertEqual(phases, [.presenting, .paused, .presenting])
+    }
+
+    // Given a presentation and a palette asking to open apps
+    // When the app is sensitive, then when it is not
+    // Then the sensitive one is refused with nothing activated; another hidden app may open
+    func testPaletteRefusesSensitiveAppsWhilePresenting() {
+        sensitive = ["com.hidden"]
+        let engine = makeEngine()
+        collapsed(engine)
+        engine.startPresentation()
+        visibility.succeed(visibility.requests.count - 1)
+        let requests = visibility.requests.count
+
+        var lifts: [PaletteLift] = []
+        engine.allowTemporarily("com.hidden") { lifts.append($0) }
+        XCTAssertEqual(lifts, [.sensitive])
+        XCTAssertEqual(visibility.requests.count, requests, "nothing is activated for a sensitive app")
+
+        engine.allowTemporarily("com.always") { lifts.append($0) }
+        XCTAssertEqual(visibility.requests.last?.bundles, [own, "com.always"])
+        XCTAssertEqual(visibility.requests.last?.systemItems, NativeVisibilityEngine.presentationSystemItems)
+        visibility.succeed(visibility.requests.count - 1)
+        XCTAssertEqual(lifts, [.sensitive, .lifted])
+    }
+
+    // Outside a presentation the same app opens as before.
+    func testPaletteOpensSensitiveAppsWhenNotPresenting() {
+        sensitive = ["com.hidden"]
+        let engine = makeEngine()
+        collapsed(engine)
+        var lifts: [PaletteLift] = []
+        engine.allowTemporarily("com.hidden") { lifts.append($0) }
+        XCTAssertEqual(visibility.requests.last?.bundles, [own, "com.visible", "com.hidden"])
+        visibility.succeed(visibility.requests.count - 1)
+        XCTAssertEqual(lifts, [.lifted])
+    }
+
+    // Given an app the palette allowed for its open menu
+    // When another app launches (a re-activation)
+    // Then the held list still carries the allowed app, and ending the session puts the rest back
+    func testReactivationKeepsThePalettesAllowedApp() {
+        let engine = makeEngine()
+        collapsed(engine)
+        engine.allowTemporarily("com.hidden") { _ in }
+        visibility.succeed(visibility.requests.count - 1)
+
+        engine.applicationLaunched("com.new")
+        XCTAssertEqual(visibility.requests.last?.bundles, [own, "com.new", "com.visible", "com.hidden"])
+        XCTAssertTrue(visibility.requests.last?.bundles.contains("com.hidden") ?? false, "the open menu must not disappear")
+        visibility.succeed(visibility.requests.count - 1)
+
+        engine.endTemporaryAllow()
+        XCTAssertEqual(visibility.requests.last?.bundles, [own, "com.new", "com.visible"])
+    }
+
+    // Given the palette's allowed app and a presentation that starts
+    // When the app is not sensitive, then when it is
+    // Then it stays in the strict list, or is dropped from it
+    func testPresentationStartingKeepsOrDropsThePalettesApp() {
+        let engine = makeEngine()
+        collapsed(engine)
+        engine.allowTemporarily("com.hidden") { _ in }
+        visibility.succeed(visibility.requests.count - 1)
+        engine.startPresentation()
+        XCTAssertEqual(visibility.requests.last?.bundles, [own, "com.hidden"], "its open menu stays")
+        visibility.succeed(visibility.requests.count - 1)
+        engine.stopPresentation()
+        visibility.succeed(visibility.requests.count - 1)
+        engine.endTemporaryAllow()
+        visibility.succeed(visibility.requests.count - 1)
+
+        sensitive = ["com.always"]
+        engine.allowTemporarily("com.always") { _ in }
+        visibility.succeed(visibility.requests.count - 1)
+        engine.startPresentation()
+        XCTAssertEqual(visibility.requests.last?.bundles, strict, "a sensitive app is dropped when presenting starts")
+    }
+
+    // MARK: A user change ends the palette's lift
+
+    // Given the always-hidden section hidden and an app the palette allowed
+    // When the user expands and collapses during the session
+    // Then the collapsed list no longer carries the palette's app
+    func testUserToggleDuringAPaletteSessionDropsItsAppFromTheCollapse() {
+        let engine = makeEngine()
+        engine.updateAlwaysHiddenSection(enabled: true, separatorHidden: true)
+        collapsed(engine)
+        engine.allowTemporarily("com.hidden") { _ in }
+        visibility.succeed(visibility.requests.count - 1)
+        engine.userChangedBar(); engine.expand()
+        visibility.succeed(visibility.requests.count - 1)
+        engine.userChangedBar(); engine.collapse { _ in }
+        visibility.succeed(visibility.requests.count - 1)
+        XCTAssertEqual(visibility.requests.last?.bundles, [own, "com.visible"])
+        XCTAssertEqual(engine.currentHold?.bundles, ["com.visible"])
+    }
+
+    // Same, while presenting: the strict list must not keep the palette's app.
+    func testUserToggleDuringAPaletteSessionDropsItsAppFromTheStrictList() {
+        let engine = makeEngine()
+        collapsed(engine)
+        engine.startPresentation()
+        visibility.succeed(visibility.requests.count - 1)
+        engine.allowTemporarily("com.hidden") { _ in }
+        visibility.succeed(visibility.requests.count - 1)
+        XCTAssertEqual(engine.currentHold?.bundles, ["com.hidden"])
+        engine.userChangedBar(); engine.expand()
+        visibility.succeed(visibility.requests.count - 1)
+        engine.userChangedBar(); engine.collapse { _ in }
+        visibility.succeed(visibility.requests.count - 1)
+        XCTAssertEqual(visibility.requests.last?.bundles, strict)
+        XCTAssertEqual(engine.currentHold?.bundles, [])
+    }
+
+    // Given the expanded bar kept by the always-hidden section and an allowed app
+    // When the user collapses (not only expands) during the session, and the session then ends
+    // Then the app is gone from the list, and ending the session changes nothing more
+    func testUserCollapseDuringAPaletteSessionEndsItsAllow() {
+        let engine = makeEngine()
+        engine.updateAlwaysHiddenSection(enabled: true, separatorHidden: true)
+        visibility.succeed(visibility.requests.count - 1)
+        engine.allowTemporarily("com.always") { _ in }
+        visibility.succeed(visibility.requests.count - 1)
+        XCTAssertTrue(engine.currentHold?.bundles.contains("com.always") ?? false)
+
+        engine.userChangedBar(); engine.collapse { _ in }
+        visibility.succeed(visibility.requests.count - 1)
+        XCTAssertFalse(engine.currentHold?.bundles.contains("com.always") ?? true)
+        let requests = visibility.requests.count
+        engine.endTemporaryAllow()
+        XCTAssertEqual(visibility.requests.count, requests, "the user's change stands")
+    }
+
+    // MARK: A late allow does not leak
+
+    // Given a palette session wired to the engine whose allow lands after the 5 s lift cap
+    // When an app launches afterwards (a non-user re-activation)
+    // Then the late allow was ended, and the app is not in the list
+    func testAnAllowLandingAfterTheSessionGaveUpDoesNotSurviveAReactivation() {
+        let engine = makeEngine()
+        collapsed(engine)
+        let session = PaletteRevealSession(
+            now: { [unowned self] in time.now },
+            after: { [unowned self] in time.after($0, $1) },
+            allow: { engine.allowTemporarily($0, completion: $1) },
+            press: { _, done in done(.pressed) },
+            menuIsOpen: { _ in false },
+            appIsActive: { _ in false },
+            restore: { engine.endTemporaryAllow() })
+        var results: [PaletteOpenResult] = []
+        session.open(bundle: "com.hidden") { results.append($0) }
+        let pending = visibility.requests.count - 1
+
+        time.advance(to: 6)
+        XCTAssertEqual(results, [.unavailable], "the session gave up")
+        visibility.succeed(pending)
+        // The session ended the allow the moment it landed: the engine swaps it back.
+        visibility.succeed(visibility.requests.count - 1)
+
+        engine.applicationLaunched("com.new")
+        visibility.succeed(visibility.requests.count - 1)
+        XCTAssertFalse(engine.currentHold?.bundles.contains("com.hidden") ?? true, "the late allow must not ride along")
+        XCTAssertEqual(engine.currentHold?.bundles, ["com.new", "com.visible"])
+    }
+}
+

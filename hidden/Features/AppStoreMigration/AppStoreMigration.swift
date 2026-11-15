@@ -41,6 +41,7 @@ enum AppStoreSettingsImport {
     /// item positions, internal flags) is never copied.
     static let importableKeys: [String: Kind] = [
         UserDefaults.Key.globalKey: .data,
+        UserDefaults.Key.findHiddenIconShortcut: .data,
         UserDefaults.Key.numberOfSecondForAutoHide: .number,
         UserDefaults.Key.isAutoStart: .number,
         UserDefaults.Key.isAutoHide: .number,
@@ -51,10 +52,17 @@ enum AppStoreSettingsImport {
         UserDefaults.Key.stealthExpandIconEnabled: .number,
         UserDefaults.Key.arrowStyle: .string,
         UserDefaults.Key.hoverToExpand: .number,
+        UserDefaults.Key.revealOnScrollEnabled: .number,
+        UserDefaults.Key.revealOnEmptyClickEnabled: .number,
+        UserDefaults.Key.revealOnShakeEnabled: .number,
         UserDefaults.Key.notchOverflowEnabled: .number,
         UserDefaults.Key.pauseHidingForUnkeepableItems: .number,
         UserDefaults.Key.pinnedSectionsEnabled: .number,
+        UserDefaults.Key.newAppDefaultSection: .number,
         UserDefaultsPinnedSections.key: .dictionary,
+        UserDefaults.Key.presentationAutoMirrorEnabled: .number,
+        UserDefaults.Key.presentationSensitiveApps: .dictionary,
+        UserDefaults.Key.presentationShortcut: .data,
     ]
 
     static func containerPreferencesURL(home: URL, bundleIdentifier: String) -> URL {

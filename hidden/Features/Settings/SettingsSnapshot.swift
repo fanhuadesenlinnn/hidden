@@ -41,7 +41,7 @@ enum SettingsSnapshot {
                 shoot(PreferencesWindowController(context: context), tab: .general, appearance: appearance,
                       to: dir.appendingPathComponent("\(build)-status-\(status)-\(mode).png"))
             }
-            // Menu Bar Apps with the pinned sections on, off and empty, from
+            // The Icons pane with the pinned sections on, off and empty, from
             // fixed data: the live table would put this Mac's apps in the shots.
             let registered = MenuBarAppsPane.makeViewController
             for (state, store) in SnapshotMenuBarAppsStore.states {
@@ -54,6 +54,22 @@ enum SettingsSnapshot {
                       to: dir.appendingPathComponent("\(build)-menubarapps-\(state)-\(mode).png"))
             }
             MenuBarAppsPane.makeViewController = registered
+            #if HIDDENBAR_NATIVE_VISIBILITY
+            ArrivalsSnapshot.render(appearance: appearance, mode: mode, to: dir)
+            #endif
+            // Presentation mode: the capsule, panels and note, then the General
+            // pane (which now scrolls) at the Presentation group.
+            #if HIDDENBAR_NATIVE_VISIBILITY
+            PresentationSnapshot.render(to: dir, appearance: appearance, mode: mode)
+            var presentation = live
+            presentation.build = .direct
+            presentation.osMajorVersion = 27
+            presentation.statusOverride = .working
+            PresentationSensitiveAppsControl.snapshotChips = PresentationSnapshot.sensitiveChipsFixture
+            shoot(PreferencesWindowController(context: presentation), tab: .general, appearance: appearance,
+                  to: dir.appendingPathComponent("\(build)-present-settings-\(mode).png"), scrollsToEnd: true)
+            PresentationSensitiveAppsControl.snapshotChips = nil
+            #endif
             // The preview strip per engine, with the always-hidden section on.
             for (os, engine) in [(27, "macos27"), (26, "macos26")] {
                 var context = live
@@ -64,15 +80,24 @@ enum SettingsSnapshot {
                       to: dir.appendingPathComponent("\(build)-preview-\(engine)-alwayshidden-\(mode).png"))
             }
         }
+        // Type-to-find palette: its states, from fixture apps, and the General tab with its shortcut set.
+        #if HIDDENBAR_NATIVE_VISIBILITY
+        PaletteSnapshot.render(to: dir, build: build)
+        #endif
     }
 
-    private static func shoot(_ controller: PreferencesWindowController, tab: SettingsTab,
-                              appearance: NSAppearance.Name, to url: URL) {
+    static func shoot(_ controller: PreferencesWindowController, tab: SettingsTab,
+                              appearance: NSAppearance.Name, to url: URL, scrollsToEnd: Bool = false) {
         guard let window = controller.window else { return }
         window.appearance = NSAppearance(named: appearance)
         (window as? SettingsWindow)?.drawsAsKey = true
         controller.select(tab, animate: false)
         window.layoutIfNeeded()
+        if scrollsToEnd, let document = controller.paneScroll.documentView {
+            // A pane taller than the window scrolls: show its end.
+            controller.paneScroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, document.frame.height - controller.paneScroll.contentView.bounds.height)))
+            controller.paneScroll.reflectScrolledClipView(controller.paneScroll.contentView)
+        }
         window.displayIfNeeded()
         guard let frameView = window.contentView?.superview,
               let rep = frameView.bitmapImageRepForCachingDisplay(in: frameView.bounds) else { return }

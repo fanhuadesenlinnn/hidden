@@ -137,6 +137,23 @@ final class UserDefaultsPinnedSections: MenuBarSectionMemory {
     }
 }
 
+// Apps that recreate their status item without relaunching (BitBar, SwiftBar)
+// read as dragged on every recreation; a bundle in this set keeps its pinned
+// section whatever position is observed.
+final class UserDefaultsDragLocks {
+    static let key = "pinnedDragLocks"
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    var bundles: Set<String> {
+        get { Set(defaults.stringArray(forKey: Self.key) ?? []) }
+        set { defaults.set(newValue.sorted(), forKey: Self.key) }
+    }
+}
+
 enum PinnedSectionResolver {
     // Where an app that starts with no pinned section goes.
     static let newAppSection: MenuBarSection = .visible
@@ -145,9 +162,11 @@ enum PinnedSectionResolver {
     // from it. A position is the user's choice only when it changed since the
     // app was last read and the app did not start meanwhile: macOS puts a new
     // or relaunched icon far left, wherever the user had it. `observed` is the
-    // section each app was last read in; it follows every read.
+    // section each app was last read in; it follows every read. An app in
+    // `ignoringDrags` never takes a moved position.
     static func resolve(read: [String: MenuBarSection],
                         launchedSinceRead: Set<String>,
+                        ignoringDrags: Set<String> = [],
                         observed: inout [String: MenuBarSection],
                         table: inout [String: MenuBarSection]) -> [String: MenuBarSection] {
         var resolved: [String: MenuBarSection] = [:]
@@ -157,7 +176,7 @@ enum PinnedSectionResolver {
             switch table[bundle] {
             case nil:
                 table[bundle] = launched ? newAppSection : position
-            case .some(_) where moved && !launched:
+            case .some(_) where moved && !launched && !ignoringDrags.contains(bundle):
                 table[bundle] = position
             case .some:
                 break
@@ -185,6 +204,14 @@ enum PinnedSectionEdits {
         table.sections = PinnedSectionResolver.resetAllToVisible(table.sections)
         NotificationCenter.default.post(name: .pinnedSectionsChanged, object: nil)
     }
+
+    // Forgets an app that is gone: its section and its drag lock. If it runs
+    // again it comes back as a new app (`newAppSection`).
+    static func remove(_ bundle: String, in table: MenuBarSectionMemory, locks: UserDefaultsDragLocks = UserDefaultsDragLocks()) {
+        table.sections.removeValue(forKey: bundle)
+        locks.bundles.remove(bundle)
+        NotificationCenter.default.post(name: .pinnedSectionsChanged, object: nil)
+    }
 }
 
 // The rows of the Preferences "Menu bar apps" list: every app the table
@@ -194,13 +221,19 @@ enum PinnedSectionsList {
         let bundle: String
         let name: String
         let section: MenuBarSection
+        var ignoresDrags = false
+        // Waiting for an answer in the arrivals inbox: listed first, tagged NEW.
+        var isNew = false
     }
 
-    static func entries(table: [String: MenuBarSection], name: (String) -> String?) -> [Entry] {
+    static func entries(table: [String: MenuBarSection], name: (String) -> String?,
+                        ignoringDrags: Set<String> = [], pending: Set<String> = []) -> [Entry] {
         return table.map { bundle, section in
             let label = bundle == MenuBarLayoutResolver.systemExtrasBundle ? "macOS extras (Focus, Now Playing...)" : (name(bundle) ?? bundle)
-            return Entry(bundle: bundle, name: label, section: section)
+            return Entry(bundle: bundle, name: label, section: section, ignoresDrags: ignoringDrags.contains(bundle),
+                         isNew: pending.contains(bundle))
         }.sorted {
+            if $0.isNew != $1.isNew { return $0.isNew }
             let order = $0.name.localizedCaseInsensitiveCompare($1.name)
             return order == .orderedSame ? $0.bundle < $1.bundle : order == .orderedAscending
         }

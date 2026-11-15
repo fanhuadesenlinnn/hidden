@@ -24,6 +24,24 @@ enum Preferences {
         }
     }
     
+    /// The global shortcut that opens the type-to-find palette. Unset means the
+    /// feature is off; the registry binds it, so setting it needs no other call.
+    static var findHiddenIconShortcut: GlobalKeybindPreferences? {
+        get {
+            guard let data = UserDefaults.standard.data(forKey: UserDefaults.Key.findHiddenIconShortcut) else { return nil }
+            return try? JSONDecoder().decode(GlobalKeybindPreferences.self, from: data)
+        }
+
+        set {
+            if let newValue, let data = try? JSONEncoder().encode(newValue) {
+                UserDefaults.standard.set(data, forKey: UserDefaults.Key.findHiddenIconShortcut)
+            } else {
+                UserDefaults.standard.removeObject(forKey: UserDefaults.Key.findHiddenIconShortcut)
+            }
+            NotificationCenter.default.post(Notification(name: .prefsChanged))
+        }
+    }
+
     static var isAutoStart: Bool {
         get {
             return UserDefaults.standard.bool(forKey: UserDefaults.Key.isAutoStart)
@@ -105,6 +123,84 @@ enum Preferences {
         set {
             UserDefaults.standard.set(newValue, forKey: UserDefaults.Key.hoverToExpand)
             NotificationCenter.default.post(Notification(name: .prefsChanged))
+        }
+    }
+
+    // Reveal without aiming at the arrow: each gesture is its own opt-in switch.
+    // Scroll down on the menu bar shows the hidden icons, scroll up hides them.
+    static var revealOnScrollEnabled: Bool {
+        get {
+            UserDefaults.standard.bool(forKey: UserDefaults.Key.revealOnScrollEnabled)
+        }
+
+        set {
+            UserDefaults.standard.set(newValue, forKey: UserDefaults.Key.revealOnScrollEnabled)
+            NotificationCenter.default.post(Notification(name: .prefsChanged))
+        }
+    }
+
+    // A click on empty menu bar space shows them. Needs Accessibility to tell
+    // empty space from an icon, so the direct build only.
+    static var revealOnEmptyClickEnabled: Bool {
+        get {
+            UserDefaults.standard.bool(forKey: UserDefaults.Key.revealOnEmptyClickEnabled)
+        }
+
+        set {
+            UserDefaults.standard.set(newValue, forKey: UserDefaults.Key.revealOnEmptyClickEnabled)
+            NotificationCenter.default.post(Notification(name: .prefsChanged))
+        }
+    }
+
+    // Three quick side-to-side moves of the pointer inside the menu bar show them.
+    static var revealOnShakeEnabled: Bool {
+        get {
+            UserDefaults.standard.bool(forKey: UserDefaults.Key.revealOnShakeEnabled)
+        }
+
+        set {
+            UserDefaults.standard.set(newValue, forKey: UserDefaults.Key.revealOnShakeEnabled)
+            NotificationCenter.default.post(Notification(name: .prefsChanged))
+        }
+    }
+
+    // Presentation mode turns itself on while a display is mirrored. Off by default.
+    static var presentationAutoMirrorEnabled: Bool {
+        get {
+            UserDefaults.standard.bool(forKey: UserDefaults.Key.presentationAutoMirrorEnabled)
+        }
+
+        set {
+            UserDefaults.standard.set(newValue, forKey: UserDefaults.Key.presentationAutoMirrorEnabled)
+            NotificationCenter.default.post(Notification(name: .prefsChanged))
+        }
+    }
+
+    // Apps that stay hidden while presentation mode is on, even when the arrow
+    // is clicked. Stored as a dictionary [bundle id: true].
+    static var presentationSensitiveApps: Set<String> {
+        get {
+            let stored = UserDefaults.standard.dictionary(forKey: UserDefaults.Key.presentationSensitiveApps) ?? [:]
+            return Set(stored.filter { ($0.value as? Bool) == true }.keys)
+        }
+
+        set {
+            let stored = Dictionary(uniqueKeysWithValues: newValue.map { ($0, true) })
+            UserDefaults.standard.set(stored, forKey: UserDefaults.Key.presentationSensitiveApps)
+            NotificationCenter.default.post(Notification(name: .prefsChanged))
+        }
+    }
+
+    // Internal: whether presentation mode is on right now, for scripts and the
+    // debug state. Never read back to resume a session: a manual start does not
+    // survive a relaunch, so a crash never re-hides the bar on its own.
+    static var presentationModeActive: Bool {
+        get {
+            UserDefaults.standard.bool(forKey: UserDefaults.Key.presentationModeActive)
+        }
+
+        set {
+            UserDefaults.standard.set(newValue, forKey: UserDefaults.Key.presentationModeActive)
         }
     }
 
@@ -190,6 +286,19 @@ enum Preferences {
 
         set {
             UserDefaults.standard.set(newValue, forKey: UserDefaults.Key.pinnedSectionsEnabled)
+            NotificationCenter.default.post(Notification(name: .prefsChanged))
+        }
+    }
+
+    // macOS 27, direct build: what happens to an app that adds its first icon.
+    // Show It (the 1.12 behavior) unless the user picks otherwise.
+    static var newAppDefaultSection: NewAppDefault {
+        get {
+            NewAppDefault(rawValue: UserDefaults.standard.object(forKey: UserDefaults.Key.newAppDefaultSection) as? Int ?? NewAppDefault.show.rawValue) ?? .show
+        }
+
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: UserDefaults.Key.newAppDefaultSection)
             NotificationCenter.default.post(Notification(name: .prefsChanged))
         }
     }

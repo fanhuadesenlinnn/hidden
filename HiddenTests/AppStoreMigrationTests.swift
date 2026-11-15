@@ -95,6 +95,11 @@ final class AppStoreMigrationTests: XCTestCase {
             UserDefaults.Key.stealthExpandIconEnabled, UserDefaults.Key.arrowStyle, UserDefaults.Key.hoverToExpand,
             UserDefaults.Key.notchOverflowEnabled, UserDefaults.Key.pauseHidingForUnkeepableItems,
             UserDefaults.Key.pinnedSectionsEnabled, UserDefaultsPinnedSections.key,
+            UserDefaults.Key.revealOnScrollEnabled, UserDefaults.Key.revealOnEmptyClickEnabled,
+            UserDefaults.Key.revealOnShakeEnabled, UserDefaults.Key.newAppDefaultSection,
+            UserDefaults.Key.findHiddenIconShortcut,
+            UserDefaults.Key.presentationAutoMirrorEnabled, UserDefaults.Key.presentationSensitiveApps,
+            UserDefaults.Key.presentationShortcut,
         ]
         XCTAssertEqual(Set(AppStoreSettingsImport.importableKeys.keys), appKeys)
     }
@@ -277,6 +282,26 @@ final class AppStoreMigrationTests: XCTestCase {
                                                countsOtherPaths: false, countsAppStoreCopies: true), .offerToReplaceAppStoreCopy(41))
         XCTAssertEqual(OtherRunningCopy.decide(others: [appStore, relaunch], runningBundle: downloadsApp,
                                                countsOtherPaths: false, countsAppStoreCopies: true), .quitInFavorOf(43))
+    }
+
+    // Given an import from the App Store build
+    // When its settings are applied
+    // Then the pinned-sections notice goes out too, as the engine and the catalog listen to it, not to prefsChanged
+    func test_importTellsTheAppAboutPinnedSections() {
+        XCTAssertTrue(AppDelegate.importedPreferenceNotifications.contains(.pinnedSectionsChanged))
+        XCTAssertTrue(AppDelegate.importedPreferenceNotifications.contains(.prefsChanged))
+    }
+
+    // Given a build that does not use the native engine
+    // When the app registers its shortcuts
+    // Then the palette and presentation shortcuts are not registered; with the native engine they are
+    func test_paletteAndPresentationShortcutsExistOnlyWithTheNativeEngine() {
+        let registry = HotKeyRegistry(defaults: defaults, center: NotificationCenter()) { _, _ in nil }
+        AppDelegate.registerNativeEngineHotKeys(in: registry, usesNativeEngine: false, togglePalette: {}, togglePresentation: {})
+        XCTAssertEqual(registry.registeredKeys, [])
+
+        AppDelegate.registerNativeEngineHotKeys(in: registry, usesNativeEngine: true, togglePalette: {}, togglePresentation: {})
+        XCTAssertEqual(registry.registeredKeys, [UserDefaults.Key.findHiddenIconShortcut, UserDefaults.Key.presentationShortcut].sorted())
     }
 }
 
