@@ -17,7 +17,117 @@ Użyj funkcji „Zawsze ukryte”, aby uporządkować ikony. Oto jak ją skonfig
 Jak włączyć tę funkcję:
 1. Włącz pasek „Zawsze ukryte” oznaczony symbolem „|” (półprzezroczysty kolorowy pasek).
 2. Przytrzymaj klawisz ⌘ i przeciągnij go na lewą stronę zwykłego paska. Następnie przenieś na lewo od tego symbolu wszystkie ikony, które chcesz zawsze ukrywać.
-3. Na koniec kliknij prawym przyciskiem myszy ikonę zwijania „>”, aby je ukryć.
+3. Na koniec przytrzymaj klawisz ⌥ Option i kliknij ikonę zwijania „>”, aby je ukryć.
 Jak wyświetlić zawsze ukryte ikony:
-1. Ponownie kliknij prawym przyciskiem myszy ikonę „<”, aby wyświetlić ukryte ikony. Powtórz tę czynność, aby ponownie je ukryć. Gotowe 😉!
+1. Ponownie kliknij ikonę „<” z wciśniętym klawiszem ⌥ Option, aby wyświetlić ukryte ikony. Powtórz tę czynność, aby ponownie je ukryć. Gotowe 😉!
 ";
+"Arrow style" = "Arrow style";
+"Arrow" = "Arrow";
+"Chevron" = "Chevron";
+"Dot" = "Dot";
+"Line" = "Line";
+"Hidden Bar needs Accessibility access to hide icons." = "Hidden Bar needs Accessibility access to hide icons.";
+"Open Settings…" = "Open Settings…";
+"Expand the bar when the pointer rests on the menu bar" = "Expand the bar when the pointer rests on the menu bar";
+"Show the whole bar when the microphone or camera turns on" = "Show the whole bar when the microphone or camera turns on";
+"Tutorial text (arrow boundary)" = "
+Use the always hidden feature to keep your icons tidy. Here's how to set it
+Steps to enable:
+1. Enable the always hidden “|” (translucent color bar)
+2. Hold  ⌘ and drag it to the left of the arrow, then move any icons you want to disappear on the left of that bar.
+3. Finally, hold ⌥ Option and click the collapse “<” icon to make it disappear.
+Steps to view always hidden icons:
+1. Option-click the “<” icon again to view and repeat the action to enable the feature. Enjoy 😉!
+";
+
+/* Settings window (1.12) */
+"General" = "General";
+"Menu Bar Apps" = "Menu Bar Apps";
+"Appearance" = "Appearance";
+"Advanced" = "Advanced";
+"About" = "About";
+"Hidden Bar is working" = "Hidden Bar is working";
+"Click the arrow in the menu bar, or press %@, to show hidden icons." = "Click the arrow in the menu bar, or press %@, to show hidden icons.";
+"Click the arrow in the menu bar to show hidden icons." = "Click the arrow in the menu bar to show hidden icons.";
+"Hidden Bar needs Accessibility access" = "Hidden Bar needs Accessibility access";
+"macOS 27 lets Hidden Bar hide icons only with this permission. Nothing is hidden until you turn it on." = "macOS 27 lets Hidden Bar hide icons only with this permission. Nothing is hidden until you turn it on.";
+"Open System Settings" = "Open System Settings";
+"Move Hidden Bar to Applications" = "Move Hidden Bar to Applications";
+"It is running from %@. macOS 27 hides icons only for apps in the Applications folder, so nothing is hidden yet." = "It is running from %@. macOS 27 hides icons only for apps in the Applications folder, so nothing is hidden yet.";
+"This App Store version can't hide icons on macOS 27" = "This App Store version can't hide icons on macOS 27";
+"Apple's sandbox blocks hiding on macOS 27. Your settings below are kept." = "Apple's sandbox blocks hiding on macOS 27. Your settings below are kept.";
+"Learn More…" = "Learn More…";
+"Your menu bar" = "Your menu bar";
+"Always hidden" = "Always hidden";
+"Translucent bar" = "Translucent bar";
+"Hidden" = "Hidden";
+"Separator" = "Separator";
+"Always shown" = "Always shown";
+"Hold ⌘ and drag an icon left of the arrow to hide it." = "Hold ⌘ and drag an icon left of the arrow to hide it.";
+"Hold ⌘ and drag an icon left of the | separator to hide it." = "Hold ⌘ and drag an icon left of the | separator to hide it.";
+"Option-click the arrow to see always-hidden icons." = "Option-click the arrow to see always-hidden icons.";
+"Open Hidden Bar at login" = "Open Hidden Bar at login";
+"Could not update the login item" = "Could not update the login item";
+"Check System Settings > General > Login Items and make sure Hidden Bar is allowed." = "Check System Settings > General > Login Items and make sure Hidden Bar is allowed.";
+"Hide icons again" = "Hide icons again";
+"Never" = "Never";
+"After %d seconds" = "After %d seconds";
+"After 1 minute" = "After 1 minute";
+"Always-hidden section" = "Always-hidden section";
+"A second group, left of the hidden icons, that stays hidden when you click the arrow." = "A second group, left of the hidden icons, that stays hidden when you click the arrow.";
+"Keyboard shortcut" = "Keyboard shortcut";
+"Type a Shortcut…" = "Type a Shortcut…";
+"Clear" = "Clear";
+"Show icons when the pointer rests on the menu bar" = "Show icons when the pointer rests on the menu bar";
+"Privacy and permissions" = "Privacy and permissions";
+"Accessibility" = "Accessibility";
+"Allowed" = "Allowed";
+"Off" = "Off";
+"Show all icons when the microphone or camera turns on" = "Show all icons when the microphone or camera turns on";
+"So you see which app is using it. Click the arrow to hide again." = "So you see which app is using it. Click the arrow to hide again.";
+"Fade the arrow when icons are hidden" = "Fade the arrow when icons are hidden";
+"The arrow turns almost invisible until you need it. It is still there to click." = "The arrow turns almost invisible until you need it. It is still there to click.";
+"Each preview shows the arrow with icons hidden, then shown." = "Each preview shows the arrow with icons hidden, then shown.";
+"Show this window when Hidden Bar opens" = "Show this window when Hidden Bar opens";
+"Make room for icons while they are shown" = "Make room for icons while they are shown";
+"Hides the menus of the app you are using while hidden icons are shown, so more icons fit." = "Hides the menus of the app you are using while hidden icons are shown, so more icons fit.";
+"Reach icons behind the camera notch" = "Reach icons behind the camera notch";
+"Right-click the arrow to list icons the notch covers." = "Right-click the arrow to list icons the notch covers.";
+"Show all icons while macOS hides one right of the arrow" = "Show all icons while macOS hides one right of the arrow";
+"Some macOS items, such as Focus or Now Playing, can't stay shown. This keeps every icon shown while one of them is right of the arrow." = "Some macOS items, such as Focus or Now Playing, can't stay shown. This keeps every icon shown while one of them is right of the arrow.";
+"Hiding method" = "Hiding method";
+"macOS 27 visibility" = "macOS 27 visibility";
+"The arrow is the edge. Picked for your macOS version." = "The arrow is the edge. Picked for your macOS version.";
+"The | separator is the edge. Picked for your macOS version." = "The | separator is the edge. Picked for your macOS version.";
+"Version" = "Version";
+"Direct download" = "Direct download";
+"Mac App Store" = "Mac App Store";
+"Keeps your menu bar tidy." = "Keeps your menu bar tidy.";
+"Check for updates automatically" = "Check for updates automatically";
+"Last checked %@." = "Last checked %@.";
+"Check for Updates…" = "Check for Updates…";
+"What's new" = "What's new";
+"Updates come from the Mac App Store." = "Updates come from the Mac App Store.";
+"Help and feedback" = "Help and feedback";
+"Report a problem" = "Report a problem";
+"On GitHub. Please say your macOS version and which Hidden Bar you use." = "On GitHub. Please say your macOS version and which Hidden Bar you use.";
+"Email" = "Email";
+"Source code" = "Source code";
+"Free and open source, MIT license." = "Free and open source, MIT license.";
+"Follow @dwarvesf on X" = "Follow @dwarvesf on X";
+"Made by Dwarves Foundation" = "Made by Dwarves Foundation";
+
+/* Pinned sections (beta), Menu Bar Apps; English until translated */
+"Pinned sections (beta)" = "Pinned sections (beta)";
+"Keeps each app in the section you pick in Menu Bar Apps, also after it restarts. Applies at the next collapse." = "Keeps each app in the section you pick in Menu Bar Apps, also after it restarts. Applies at the next collapse.";
+"Turn On" = "Turn On";
+"Pinned sections is off" = "Pinned sections is off";
+"Icons follow where macOS puts them. Turn on Pinned sections (beta) in Advanced to choose a section for each app." = "Icons follow where macOS puts them. Turn on Pinned sections (beta) in Advanced to choose a section for each app.";
+"Each app stays in the section you pick, also after it restarts. ⌘-dragging an icon across the arrow moves it too." = "Each app stays in the section you pick, also after it restarts. ⌘-dragging an icon across the arrow moves it too.";
+"No apps yet" = "No apps yet";
+"Apps with a menu bar icon appear here after the bar collapses once." = "Apps with a menu bar icon appear here after the bar collapses once.";
+"Reset" = "Reset";
+"Reset all to visible" = "Reset all to visible";
+"Shows every app, including ones that are not running now." = "Shows every app, including ones that are not running now.";
+"Visible" = "Visible";
+"Show Everything" = "Show Everything";

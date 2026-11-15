@@ -104,6 +104,7 @@ enum Preferences {
 
         set {
             UserDefaults.standard.set(newValue, forKey: UserDefaults.Key.hoverToExpand)
+            NotificationCenter.default.post(Notification(name: .prefsChanged))
         }
     }
 
@@ -114,6 +115,33 @@ enum Preferences {
 
         set {
             UserDefaults.standard.set(newValue, forKey: UserDefaults.Key.useFullStatusBarOnExpandEnabled)
+            NotificationCenter.default.post(Notification(name: .useFullStatusBarToggle))
+        }
+    }
+
+    // Fades the arrow to near invisible while the bar is collapsed, so the app
+    // is hard to spot in the menu bar (issue #173). Off by default.
+    static var stealthExpandIconEnabled: Bool {
+        get {
+            UserDefaults.standard.bool(forKey: UserDefaults.Key.stealthExpandIconEnabled)
+        }
+
+        set {
+            UserDefaults.standard.set(newValue, forKey: UserDefaults.Key.stealthExpandIconEnabled)
+            NotificationCenter.default.post(Notification(name: .stealthExpandIconToggle))
+        }
+    }
+
+    // Which expand/collapse arrow the status item shows (issue #310). Stored as
+    // the style's name; anything unreadable reads as the default arrow.
+    static var arrowStyle: ArrowStyle {
+        get {
+            ArrowStyle(storedValue: UserDefaults.standard.string(forKey: UserDefaults.Key.arrowStyle))
+        }
+
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: UserDefaults.Key.arrowStyle)
+            NotificationCenter.default.post(Notification(name: .arrowStyleChanged))
         }
     }
 
@@ -124,6 +152,45 @@ enum Preferences {
 
         set {
             UserDefaults.standard.set(newValue, forKey: UserDefaults.Key.notchOverflowEnabled)
+        }
+    }
+
+    // macOS 27, direct build: keep every icon shown while one right of the arrow
+    // cannot be kept visible by the allow-list. Off by default.
+    static var pauseHidingForUnkeepableItems: Bool {
+        get {
+            UserDefaults.standard.bool(forKey: UserDefaults.Key.pauseHidingForUnkeepableItems)
+        }
+
+        set {
+            UserDefaults.standard.set(newValue, forKey: UserDefaults.Key.pauseHidingForUnkeepableItems)
+            NotificationCenter.default.post(Notification(name: .prefsChanged))
+        }
+    }
+
+    // macOS 27, direct build: expand the bar once when a microphone or camera
+    // turns on, so the capsule naming the app shows. On by default.
+    static var showWholeBarWhenCaptureStarts: Bool {
+        get {
+            UserDefaults.standard.bool(forKey: UserDefaults.Key.showWholeBarWhenCaptureStarts)
+        }
+
+        set {
+            UserDefaults.standard.set(newValue, forKey: UserDefaults.Key.showWholeBarWhenCaptureStarts)
+            NotificationCenter.default.post(Notification(name: .prefsChanged))
+        }
+    }
+
+    // macOS 27, direct build: the section table decides where each app goes
+    // (beta). On by default; off is v1.11.2's position-based sections.
+    static var pinnedSectionsEnabled: Bool {
+        get {
+            UserDefaults.standard.object(forKey: UserDefaults.Key.pinnedSectionsEnabled) as? Bool ?? true
+        }
+
+        set {
+            UserDefaults.standard.set(newValue, forKey: UserDefaults.Key.pinnedSectionsEnabled)
+            NotificationCenter.default.post(Notification(name: .prefsChanged))
         }
     }
 }

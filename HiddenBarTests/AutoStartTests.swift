@@ -82,6 +82,94 @@ final class AutoStartTests: XCTestCase {
     }
 }
 
+final class LoginItemGateTests: XCTestCase {
+
+    func testSkipsUnderXCTestEvenInRelease() {
+        XCTAssertFalse(AutoStart.shouldTouchLoginItems(underXCTest: true, debugBuild: false))
+    }
+
+    func testSkipsInDebugBuild() {
+        XCTAssertFalse(AutoStart.shouldTouchLoginItems(underXCTest: false, debugBuild: true))
+    }
+
+    func testReleaseOutsideXCTestStillTouchesLoginItems() {
+        XCTAssertTrue(AutoStart.shouldTouchLoginItems(underXCTest: false, debugBuild: false))
+    }
+
+    // The test host itself must be recognised, or every test run registers the
+    // build-cache app as a second login item.
+    func testCurrentProcessIsDetectedAsXCTest() {
+        XCTAssertTrue(AutoStart.isRunningUnderXCTest)
+        XCTAssertFalse(AutoStart.shouldTouchLoginItems())
+    }
+
+    func testApplyUnlessTestingSkipsServiceWhenGateIsClosed() {
+        let service = FakeLoginItem(status: .notRegistered)
+        XCTAssertTrue(AutoStart.applyUnlessTesting(enabled: true, service: service, touchLoginItems: false))
+        XCTAssertEqual(service.registerCalls, 0)
+        XCTAssertEqual(service.unregisterCalls, 0)
+    }
+
+    func testApplyUnlessTestingSkipsUnregisterWhenGateIsClosed() {
+        let service = FakeLoginItem(status: .enabled)
+        XCTAssertTrue(AutoStart.applyUnlessTesting(enabled: false, service: service, touchLoginItems: false))
+        XCTAssertEqual(service.unregisterCalls, 0)
+    }
+
+    func testApplyUnlessTestingRegistersWhenGateIsOpen() {
+        let service = FakeLoginItem(status: .notRegistered)
+        _ = AutoStart.applyUnlessTesting(enabled: true, service: service, touchLoginItems: true)
+        XCTAssertEqual(service.registerCalls, 1)
+    }
+}
+
+final class LegacyLoginItemTests: XCTestCase {
+
+    private func makeDefaults() -> UserDefaults {
+        let suite = "LegacyLoginItemTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        return defaults
+    }
+
+    func testSuccessfulRemovalSetsMigratedFlag() {
+        let defaults = makeDefaults()
+        var asked: [String] = []
+        let ok = LegacyLoginItem.remove(defaults: defaults, disable: { asked.append($0); return true }, report: { _ in })
+        XCTAssertTrue(ok)
+        XCTAssertEqual(asked, [LegacyLoginItem.helperBundleID])
+        XCTAssertTrue(defaults.bool(forKey: LegacyLoginItem.migratedKey))
+    }
+
+    // #456: a failed SMLoginItemSetEnabled must not mark the migration done.
+    func testFailedRemovalLeavesFlagUnsetAndReportsHint() {
+        let defaults = makeDefaults()
+        var reports: [String] = []
+        let ok = LegacyLoginItem.remove(defaults: defaults, disable: { _ in false }, report: { reports.append($0) })
+        XCTAssertFalse(ok)
+        XCTAssertFalse(defaults.bool(forKey: LegacyLoginItem.migratedKey))
+        XCTAssertEqual(reports, [LegacyLoginItem.failureHint])
+    }
+
+    func testFailedRemovalIsRetriedOnNextLaunch() {
+        let defaults = makeDefaults()
+        _ = LegacyLoginItem.remove(defaults: defaults, disable: { _ in false }, report: { _ in })
+        var calls = 0
+        let ok = LegacyLoginItem.remove(defaults: defaults, disable: { _ in calls += 1; return true }, report: { _ in })
+        XCTAssertTrue(ok)
+        XCTAssertEqual(calls, 1)
+        XCTAssertTrue(defaults.bool(forKey: LegacyLoginItem.migratedKey))
+    }
+
+    func testAlreadyMigratedSkipsTheSystemCall() {
+        let defaults = makeDefaults()
+        defaults.set(true, forKey: LegacyLoginItem.migratedKey)
+        var calls = 0
+        XCTAssertTrue(LegacyLoginItem.remove(defaults: defaults, disable: { _ in calls += 1; return false }, report: { _ in }))
+        XCTAssertEqual(calls, 0)
+    }
+}
+
 // A fake whose register/unregister moves status to a given terminal value, like
 // the real SMAppService does on success.
 private final class TransitioningLoginItem: LoginItemServing {

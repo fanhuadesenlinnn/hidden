@@ -5,6 +5,9 @@
 	<a href="https://webuild.community">
 		<img src="https://raw.githubusercontent.com/webuild-community/badge/master/svg/love.svg" />
 	</a>
+	<a href="https://github.com/dwarvesf/hidden/actions/workflows/ci.yml">
+ 		<img src="https://github.com/dwarvesf/hidden/actions/workflows/ci.yml/badge.svg?branch=develop" alt="CI">
+	</a>
 	<a href="https://github.com/dwarvesf/hidden/releases/latest">
  		<img src="https://img.shields.io/badge/download-latest-brightgreen.svg" alt="download">
 	</a>
@@ -25,6 +28,8 @@ Hidden Bar lets you hide menu bar items to give your Mac a cleaner look.
 </p>
 
 ## 🚀 Install
+
+> **Official downloads.** Dwarves publishes Hidden Bar only through [GitHub Releases](https://github.com/dwarvesf/hidden/releases), the Homebrew cask `hiddenbar`, and the [Mac App Store listing](https://itunes.apple.com/app/hidden-bar/id1452453066). Any other site offering Hidden Bar (for example `hiddenbar.app`) is not run by Dwarves.
 
 ###  App Store
 
