@@ -31,6 +31,9 @@ import AppKit
 //   SystemUIServer's legacy Menu Extras (Time Machine...) are the exception:
 //   none was observed with a system item identifier, so they are sectioned
 //   per bundle instead.
+// - An app that turns Accessibility off (Little Snitch) cannot be placed: its
+//   icons count as visible wherever they sit, like an app that never answers.
+//   With pinned sections on, Settings › Icons can still hide it.
 // - Sections are read only while nothing is hidden, because hidden items report
 //   stale positions. They are re-read on the next collapse from an unrestricted
 //   bar. An app that starts while something is hidden is not in the read, so it
@@ -657,6 +660,10 @@ final class NativeVisibilityEngine: MenuBarEngine {
         let read = layout?.sections.keys.map { $0 } ?? []
         let complete = lastCompleteLayout?.sections.keys.map { $0 } ?? []
         return Set(read + complete)
+    }
+
+    var hiddenSectionBundles: Set<String> {
+        return Set(layout?.bundles(in: [.hidden]) ?? [])
     }
 
     // Set by the controller: the palette's reveal session also keeps a bar the user changed.

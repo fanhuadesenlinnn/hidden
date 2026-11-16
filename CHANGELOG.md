@@ -1,6 +1,19 @@
 # Changelog
 
-## v1.13.0 (unreleased)
+## Unreleased
+
+### Added
+- Direct build on macOS 27: when you expand the bar and some of the revealed icons do not fit (on a notched MacBook, right of the notch), macOS puts them into its own « button. Hidden Bar now says so once, after an expand by click or hotkey: "Some icons do not fit in the menu bar, so macOS moved them into its own « button. Click « to see them. To make room, move icons you rarely use to the always-hidden section." It never shows again, and the collapse notice from before stays separate.
+
+### Changed
+- Settings › Advanced: the switch "Show all icons while macOS hides one right of the arrow" is now "Pause hiding while macOS shows Now Playing, Focus and similar items", with a note that Hidden Bar hides nothing while one of them shows. Same stored setting, same behavior ([#446](https://github.com/dwarvesf/hidden/issues/446)).
+
+### Fixed
+- Test runs no longer read or write Hidden Bar's real preferences or act on the installed app. A test host uses its own preferences suite, and skips the "Move to Applications" offer, the App Store migration prompts, Sparkle and the saved arrow positions, so a test run cannot trash or move the installed copy.
+- macOS 27 (direct build): Little Snitch's icon no longer hides on every collapse. Little Snitch turns Accessibility off for its apps, so Hidden Bar could not see its icon, left it off the list of apps to keep, and macOS hid it wherever it sat. Hidden Bar now keeps an app it cannot see visible, as it does for an app that does not answer. Its position stays unknown, so to hide it, set it to Hidden in Settings › Icons. This likely also covers [#514](https://github.com/dwarvesf/hidden/issues/514), whose app was not identified ([#502](https://github.com/dwarvesf/hidden/issues/502)).
+- Upgrading from a version before 1.11 (the GitHub builds up to 1.10 or the App Store build) no longer leaves the old "LauncherApplication" login item behind. System Settings › General › Login Items & Extensions lists it inside "Hidden Bar" under Allow in the Background, not as a row of its own, and the old cleanup failed on every launch. Now, with "Open Hidden Bar at login" on, Hidden Bar turns its login item off and on once, which removes the old one. With it off, nothing is touched until you turn it on. If the cleanup fails, the log says once where the row is and how to remove it ([#456](https://github.com/dwarvesf/hidden/issues/456)).
+
+## v1.13.0 (2026-11-16)
 
 Four ways to reach and control your icons, all opt-in: with every default left alone, 1.13.0 behaves exactly like 1.12.0. None needs a new permission: they use the Accessibility permission hiding already asks for, plus the pointer and scroll monitors hover-to-expand already uses. They never read your screen.
 
@@ -25,7 +38,7 @@ Four ways to reach and control your icons, all opt-in: with every default left a
 - Not in this release: an automatic slideshow trigger for presentation mode (it needs a live Keynote or PowerPoint check first) and a Shortcuts action. See the backlog.
 
 
-## v1.12.0 (2026-11-15)
+## v1.12.0 (never released separately, ships inside 1.13.0)
 
 A redesigned Settings window, pinned sections (beta) on macOS 27, and the fixes from the unreleased 1.11.3 hotfix, which ships as part of this release.
 

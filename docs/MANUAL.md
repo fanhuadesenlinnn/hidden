@@ -77,7 +77,7 @@ Tabs in a centered control at the top (Cmd+1 to Cmd+5). A status card at the top
 | Advanced | Show this window when Hidden Bar opens | `isShowPreferences` |
 | Advanced | Make room for icons while they are shown: the app turns "regular" while expanded, so the frontmost app's menus give way | `useFullStatusBarOnExpandEnabled` |
 | Advanced (notch Macs) | Reach icons behind the camera notch | `notchOverflowEnabled` |
-| Advanced (macOS 27, direct) | Show all icons while macOS hides one right of the arrow | `pauseHidingForUnkeepableItems` |
+| Advanced (macOS 27, direct) | Pause hiding while macOS shows Now Playing, Focus and similar items: macOS 27 hides these items whenever an app hides icons, so while one shows, Hidden Bar hides nothing | `pauseHidingForUnkeepableItems` |
 | About (direct) | Check for updates automatically, Check for Updates… | Sparkle's `SUEnableAutomaticChecks` |
 
 The General pane scrolls when it is taller than the window (the window stops at 720 pt).
@@ -165,8 +165,9 @@ To undo any of them: `defaults delete com.dwarvesv.minimalbar <key>`.
 |---|---|
 | Icons I want visible got hidden after an update | ⌘-drag them to the right of the separator |
 | Login item missing after denying it once | System Settings > General > Login Items: re-enable Hidden Bar, then toggle the pref off/on |
-| A ghost "LauncherApplication" login item from old versions | Launch the current version once; it deauthorizes the legacy item automatically |
+| The old "LauncherApplication" login item from a version before 1.11 (System Settings > General > Login Items & Extensions lists it inside "Hidden Bar" under Allow in the Background; a "Hidden Bar" row there is normal while launch at login is on) | With "Open Hidden Bar at login" on, launch the current version once; it removes the old item. Otherwise turn "Open Hidden Bar at login" off and on in Settings |
 | App language stuck | See the `AppleLanguages` command above, or System Settings > General > Language & Region > Applications |
+| A second arrow « appears when I expand (macOS 27 direct build) | The icons Hidden Bar reveals do not all fit in the menu bar (on a notched MacBook, right of the notch), so macOS puts some into its own « button. macOS offers no setting to turn this off. Click « to see them, and move icons you rarely use to the always-hidden section (Settings > Icons) to make room. Hidden Bar says this once, the first time an expand overflows |
 | Nothing hides on a macOS 27 beta | Known (issue #360); the menu bar re-architecture broke the hiding mechanism, fix under investigation |
 | A new or just-updated app's icon shows up already hidden | macOS 26 and earlier, or the App Store build: expected, see "Why new icons start hidden" below; ⌘-drag it to the right of the separator once. macOS 27 direct build: new and relaunched apps start visible (Pinned sections, beta) |
 | An app jumps into the hidden section by itself (BitBar, SwiftBar) | macOS 27 direct build: in Settings > Icons, tick "Ignore drags" on that app; it then keeps the section you picked |
