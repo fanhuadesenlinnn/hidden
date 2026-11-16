@@ -132,7 +132,7 @@ Steps to view always hidden icons:
 "Turn On" = "Turn On";
 "Pinned sections is off" = "Pinned sections is off";
 "Icons follow where macOS puts them. Turn on Pinned sections (beta) in Advanced to choose a section for each app." = "Icons follow where macOS puts them. Turn on Pinned sections (beta) in Advanced to choose a section for each app.";
-"Each app stays in the section you pick, also after it restarts. ⌘-dragging an icon across the arrow moves it too." = "Each app stays in the section you pick, also after it restarts. ⌘-dragging an icon across the arrow moves it too.";
+"Each app stays in the section you pick, also after it restarts. ⌘-dragging an icon across the arrow moves it too. Ignore drags keeps an app in its section even when its icon moves on its own (SwiftBar, BitBar)." = "Each app stays in the section you pick, also after it restarts. ⌘-dragging an icon across the arrow moves it too. Ignore drags keeps an app in its section even when its icon moves on its own (SwiftBar, BitBar).";
 "No apps yet" = "No apps yet";
 "Apps with a menu bar icon appear here after the bar collapses once." = "Apps with a menu bar icon appear here after the bar collapses once.";
 
@@ -152,7 +152,7 @@ Steps to view always hidden icons:
 "Reset all to visible" = "Reset all to visible";
 "Shows every app, including ones that are not running now." = "Shows every app, including ones that are not running now.";
 "Ignore drags" = "Ignore drags";
-"Keep this app in its section even when its icon moves on its own, as BitBar and SwiftBar do. Dragging no longer changes it; the popup still does." = "Keep this app in its section even when its icon moves on its own, as BitBar and SwiftBar do. Dragging no longer changes it; the popup still does.";
+"Ignore drags keeps this app in its section even when its icon moves on its own (SwiftBar, BitBar). Dragging then changes nothing; the popup still does." = "Ignore drags keeps this app in its section even when its icon moves on its own (SwiftBar, BitBar). Dragging then changes nothing; the popup still does.";
 "Remove" = "Rimuovi";
 "Not running" = "Non in esecuzione";
 "Visible" = "Visible";
@@ -244,7 +244,17 @@ Steps to view always hidden icons:
 "When a display is mirrored." = "When a display is mirrored.";
 "Sensitive apps" = "Sensitive apps";
 "Stay hidden while presenting, even when you click the arrow, except while hiding is paused for the camera or microphone." = "Stay hidden while presenting, even when you click the arrow, except while hiding is paused for the camera or microphone.";
-"Sensitive apps stay hidden while presenting, except when \"Show all icons when the microphone or camera turns on\" pauses hiding. Then nothing is hidden, so the capsule that names the app using them stays visible." = "Sensitive apps stay hidden while presenting, except when \"Show all icons when the microphone or camera turns on\" pauses hiding. Then nothing is hidden, so the capsule that names the app using them stays visible.";
+"Every third-party app icon is hidden. macOS's own items stay." = "Every third-party app icon is hidden. macOS's own items stay.";
+"Click Presenting to see how many apps are hidden, or to stop." = "Click Presenting to see how many apps are hidden, or to stop.";
+"If the camera or microphone turns on, hiding pauses once so macOS can show which app uses it." = "If the camera or microphone turns on, hiding pauses once so macOS can show which app uses it.";
+"Hiding keeps going when the camera or microphone turns on, as set in Settings." = "Hiding keeps going when the camera or microphone turns on, as set in Settings.";
+"Got it" = "Got it";
+"How it works" = "How it works";
+"Start it with the shortcut above, the arrow's right-click menu, or automatically when a display is mirrored." = "Start it with the shortcut above, the arrow's right-click menu, or automatically when a display is mirrored.";
+"While it is on, every third-party app icon is hidden. macOS's own items stay. Reveal gestures and the new-app question wait." = "While it is on, every third-party app icon is hidden. macOS's own items stay. Reveal gestures and the new-app question wait.";
+"\"Find a hidden icon\" leaves sensitive apps out of its list too." = "\"Find a hidden icon\" leaves sensitive apps out of its list too.";
+"If \"Show all icons when the microphone or camera turns on\" is on, a camera or microphone that turns on while you present pauses hiding once, so macOS can show which app uses it. Nothing is hidden meanwhile, sensitive apps included. Hiding resumes when you click Hide again or collapse the bar, or when the camera and microphone turn off. A camera or microphone already on when you start does not pause it. With the switch off, hiding never pauses." = "If \"Show all icons when the microphone or camera turns on\" is on, a camera or microphone that turns on while you present pauses hiding once, so macOS can show which app uses it. Nothing is hidden meanwhile, sensitive apps included. Hiding resumes when you click Hide again or collapse the bar, or when the camera and microphone turn off. A camera or microphone already on when you start does not pause it. With the switch off, hiding never pauses.";
+"Stop it from the Presenting capsule, the shortcut, or the right-click menu. An automatic start also ends when mirroring stops." = "Stop it from the Presenting capsule, the shortcut, or the right-click menu. An automatic start also ends when mirroring stops.";
 "Edit..." = "Edit...";
 "None" = "None";
 "Choose the apps that stay hidden while presenting, even when you click the arrow, except while hiding is paused for the camera or microphone." = "Choose the apps that stay hidden while presenting, even when you click the arrow, except while hiding is paused for the camera or microphone.";
