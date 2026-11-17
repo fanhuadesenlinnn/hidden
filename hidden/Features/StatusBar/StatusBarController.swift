@@ -238,6 +238,7 @@ class StatusBarController: MenuBarItemProvider {
             native.expandBar = { [weak self] in self?.expandMenubar() }
             native.collapseBar = { [weak self] in self?.collapseMenuBar() }
             native.expandBarForCapture = { [weak self] in self?.expandMenubar(activatingApp: false) }
+            native.onCollapseTimedOut = { [weak self] in self?.autoCollapseIfNeeded() }
             pinnedSectionsObserver = NotificationCenter.default.addObserver(forName: .pinnedSectionsChanged, object: nil, queue: .main) { [weak native] _ in
                 native?.pinnedSectionsDidChange()
             }
@@ -310,7 +311,8 @@ class StatusBarController: MenuBarItemProvider {
         // so VoiceOver can operate the bar.
         let optionPressed = ExpandCollapseActionResolver.isOptionPressed(eventFlags: event?.modifierFlags, liveFlags: NSEvent.modifierFlags)
         let shiftPressed = ExpandCollapseActionResolver.isShiftPressed(eventFlags: event?.modifierFlags, liveFlags: NSEvent.modifierFlags)
-        let action = ExpandCollapseActionResolver.action(eventType: event?.type, optionPressed: optionPressed, shiftPressed: shiftPressed)
+        let action = ExpandCollapseActionResolver.action(eventType: event?.type, optionPressed: optionPressed, shiftPressed: shiftPressed,
+                                                         rightClick: Preferences.rightClickAction)
         if action.closesArrowPopovers { closeArrowPopovers() }
         switch action {
         case .ignore:
@@ -327,9 +329,11 @@ class StatusBarController: MenuBarItemProvider {
             // Right-click opens the same context menu the separator has (#356),
             // making settings reachable from the control everyone clicks.
             // The separators/always-hidden toggle stays on option-click.
+            // With right-click set to the always-hidden icons, Option-right-click.
             showContextMenu(from: sender)
         case .toggleSeparators:
-            // Both option+left and option+right land here: separators toggle.
+            // Option-click lands here, and a plain right-click when the user
+            // picked "Show always-hidden icons" for it.
             self.showHideSeparatorsAndAlwayHideArea()
         }
     }
@@ -498,8 +502,7 @@ class StatusBarController: MenuBarItemProvider {
         
         if activatingApp && wantsFullBar {
             NSApp.setActivationPolicy(.regular)
-            NSApp.activate(ignoringOtherApps: true)
-            
+            FullBarActivation.activate(NSApp)
         }
         #if HIDDENBAR_NATIVE_VISIBILITY
         presentationController?.barExpanded()
@@ -518,7 +521,7 @@ class StatusBarController: MenuBarItemProvider {
         let keyWindow = NSApp.isActive ? NSApp.keyWindow : nil
         NSApp.setActivationPolicy(policy)
         if wantsRegular {
-            NSApp.activate(ignoringOtherApps: true)
+            FullBarActivation.activate(NSApp)
         } else if let keyWindow {
             // Dropping to .accessory deactivates the app, so bring back the window in use.
             DispatchQueue.main.async { keyWindow.bringToFront() }

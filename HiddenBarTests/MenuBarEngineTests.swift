@@ -32,6 +32,8 @@ private final class FakeInventory: MenuBarInventoryProviding {
     var items: [MenuBarInventoryItem] = []
     var authorizationRequests = 0
     var snapshots = 0
+    // False: a read never comes back, as when an app never answers.
+    var answers = true
 
     func requestAuthorization() {
         authorizationRequests += 1
@@ -39,7 +41,7 @@ private final class FakeInventory: MenuBarInventoryProviding {
 
     func snapshot(completion: @escaping ([MenuBarInventoryItem]) -> Void) {
         snapshots += 1
-        completion(items)
+        if answers { completion(items) }
     }
 }
 
@@ -396,6 +398,11 @@ private func systemExtra(_ identifier: String?, x: CGFloat) -> MenuBarInventoryI
                                 systemIdentifier: identifier)
 }
 
+private func outsideApp(_ bundle: String, x: CGFloat) -> MenuBarInventoryItem {
+    return MenuBarInventoryItem(bundleIdentifier: bundle, frame: CGRect(x: x, y: 0, width: 24, height: 24),
+                                ownerName: "iStat Menus", runsOutsideApplicationsFolder: true)
+}
+
 final class FailOpenClassificationTests: XCTestCase {
     private func resolve(_ inventory: [MenuBarInventoryItem], isLTR: Bool = true) -> MenuBarLayout {
         return MenuBarLayoutResolver.resolve(inventory: inventory, separatorFrame: separator,
@@ -448,6 +455,35 @@ final class FailOpenClassificationTests: XCTestCase {
         let left = resolve([systemExtra("com.apple.menuextra.focusmode", x: 1100)])
         XCTAssertNotNil(right.reasonToKeepBarWhole(unkeepableSystemItems: unkeepable))
         XCTAssertNil(left.reasonToKeepBarWhole(unkeepableSystemItems: unkeepable))
+    }
+
+    // iStat Menus 7 runs its menu bar from ~/Library/Application Support (#521):
+    // macOS 27.0.1 hides it although its bundle id is allowed.
+    func testAppRunFromOutsideApplicationsRightOfArrowIsUnkeepable() {
+        let layout = resolve([outsideApp("com.bjango.istatmenus.status", x: 1400), item("com.app", x: 1100)])
+        XCTAssertEqual(layout.sections["com.bjango.istatmenus.status"], .visible)
+        XCTAssertEqual(layout.unkeepableVisibleApps, ["iStat Menus"])
+        XCTAssertNotNil(layout.reasonToKeepBarWhole(unkeepableSystemItems: []))
+    }
+
+    func testAppRunFromOutsideApplicationsLeftOfArrowCanBeHidden() {
+        let layout = resolve([outsideApp("com.bjango.istatmenus.status", x: 1100)])
+        XCTAssertTrue(layout.unkeepableVisibleApps.isEmpty)
+        XCTAssertNil(layout.reasonToKeepBarWhole(unkeepableSystemItems: []))
+    }
+
+    func testWhereAnAppRunsDecidesWhetherMacOSCanKeepIt() {
+        let folders = [URL(fileURLWithPath: "/Applications")]
+        func outside(_ path: String?) -> Bool {
+            AccessibilityMenuBarInventory.runsOutsideApplicationsFolder(path.map { URL(fileURLWithPath: $0) },
+                                                                        applicationFolders: folders)
+        }
+        XCTAssertTrue(outside("/Users/me/Library/Application Support/iStat Menus 7/iStat Menus Status.app"))
+        XCTAssertTrue(outside("/Users/me/Downloads/Some.app"))
+        XCTAssertFalse(outside("/Applications/iStat Menus.app/Contents/Library/LoginItems/iStat Menus Status.app"))
+        XCTAssertFalse(outside("/System/Library/CoreServices/Spotlight.app"), "macOS's own apps live in /System")
+        XCTAssertFalse(outside("/usr/libexec/sharingd"), "macOS's own daemons live in /usr (seen on 27.0.1)")
+        XCTAssertFalse(outside(nil), "a bare executable has no bundle id to allow anyway")
     }
 
     func testMissingSystemItemsAreThoseNoLongerListed() {
@@ -658,6 +694,21 @@ final class UnkeepableItemsOptInTests: XCTestCase {
         let (requests, result) = collapse([item(nil, x: 1400), item("com.app", x: 1100)], optIn: true)
         XCTAssertEqual(requests, 0, "macOS would hide an item the allow-list cannot name")
         XCTAssertEqual(result, .unavailable)
+    }
+
+    func testOptInKeepsAppRunFromOutsideApplicationsRightOfArrowShown() {
+        let (requests, result) = collapse([outsideApp("com.bjango.istatmenus.status", x: 1400), item("com.app", x: 1100)],
+                                          optIn: true)
+        XCTAssertEqual(requests, 0, "macOS would hide iStat Menus although it is allowed")
+        XCTAssertEqual(result, .unavailable)
+        XCTAssertTrue(NativeVisibilityEngine.knownUnkeepableApps.contains("iStat Menus"))
+    }
+
+    func testDefaultHidesAppRunFromOutsideApplicationsAndListsIt() {
+        let (requests, _) = collapse([outsideApp("com.bjango.istatmenus.status", x: 1400), item("com.app", x: 1100)],
+                                     optIn: false)
+        XCTAssertEqual(requests, 1, "off by default: hiding goes on as before")
+        XCTAssertTrue(NativeVisibilityEngine.knownUnkeepableApps.contains("iStat Menus"), "Preferences names it")
     }
 
     func testOptInStillCollapsesWhenTheOwnerIsLeftOfArrow() {
@@ -1189,6 +1240,94 @@ final class NativeVisibilityEngineTests: XCTestCase {
         visibility.succeed(visibility.requests.count - 1)
         XCTAssertEqual(results, [.collapsed])
         XCTAssertEqual(engine.state, .collapsed)
+    }
+
+    // MARK: A request macOS never answers (#523, #524)
+
+    // While a collapse is in flight every arrow click and auto-collapse is
+    // ignored, so one macOS never answers must not keep the engine busy.
+    func testACollapseMacOSNeverAnswersGivesUpAndShowsTheBar() {
+        let engine = makeEngine()
+        var timeouts: [(delay: TimeInterval, fire: () -> Void)] = []
+        engine.scheduleCollapseTimeout = { timeouts.append(($0, $1)) }
+        var results: [CollapseResult] = []
+        engine.collapse { results.append($0) }
+        XCTAssertEqual(engine.state, .calibrating)
+        XCTAssertEqual(timeouts.map(\.delay), [NativeVisibilityEngine.collapseTimeout])
+
+        timeouts.first?.fire()
+        XCTAssertEqual(engine.state, .expanded, "nothing was hidden, so the bar shows expanded")
+        XCTAssertEqual(results, [.unavailable])
+
+        let late = visibility.succeed(0)
+        XCTAssertTrue(late.isInvalidated, "a late answer is dropped, so it hides nothing")
+        XCTAssertEqual(engine.state, .expanded)
+        XCTAssertEqual(results, [.unavailable], "the collapse reports once")
+
+        engine.collapse { results.append($0) }
+        XCTAssertEqual(visibility.requests.count, 2, "the next click asks again")
+        visibility.succeed(1)
+        XCTAssertEqual(engine.state, .collapsed)
+        XCTAssertEqual(results, [.unavailable, .collapsed])
+    }
+
+    func testACollapseWhoseSectionReadNeverReturnsGivesUp() {
+        let engine = makeEngine()
+        var timeout: (() -> Void)?
+        engine.scheduleCollapseTimeout = { timeout = $1 }
+        inventory.answers = false
+        var results: [CollapseResult] = []
+        engine.collapse { results.append($0) }
+        XCTAssertEqual(engine.state, .calibrating)
+
+        timeout?()
+        XCTAssertEqual(engine.state, .expanded)
+        XCTAssertEqual(results, [.unavailable])
+        XCTAssertTrue(visibility.requests.isEmpty)
+    }
+
+    // The controller re-arms auto-collapse when told, as the auto-hide timer
+    // that fired into the stuck collapse was used up.
+    func testAutoCollapseTriesAgainAfterACollapseTimedOut() {
+        let engine = makeEngine()
+        engine.scheduleCollapseTimeout = { [unowned self] in time.after($0, $1) }
+        var timedOut = 0
+        engine.onCollapseTimedOut = { [unowned self, unowned engine] in
+            timedOut += 1
+            time.after(10) { engine.collapse { _ in } }
+        }
+        engine.collapse { _ in }
+        time.advance(to: NativeVisibilityEngine.collapseTimeout)
+        XCTAssertEqual(timedOut, 1)
+        XCTAssertEqual(engine.state, .expanded)
+
+        time.advance(to: NativeVisibilityEngine.collapseTimeout + 10)
+        XCTAssertEqual(visibility.requests.count, 2, "auto-collapse runs again")
+        visibility.succeed(1)
+        XCTAssertEqual(engine.state, .collapsed)
+    }
+
+    func testATimeoutLeavesACollapseThatLandedAlone() {
+        let engine = makeEngine()
+        var timeouts: [() -> Void] = []
+        engine.scheduleCollapseTimeout = { timeouts.append($1) }
+        var timedOut = 0
+        engine.onCollapseTimedOut = { timedOut += 1 }
+        engine.collapse { _ in }
+        let held = visibility.succeed(0)
+        timeouts[0]()
+        XCTAssertEqual(engine.state, .collapsed)
+        XCTAssertFalse(held.isInvalidated)
+
+        // A newer collapse in flight is not cut short by the older one's timeout.
+        engine.expand()
+        engine.collapse { _ in }
+        XCTAssertEqual(timeouts.count, 2)
+        timeouts[0]()
+        XCTAssertEqual(engine.state, .calibrating)
+        visibility.succeed(1)
+        XCTAssertEqual(engine.state, .collapsed)
+        XCTAssertEqual(timedOut, 0)
     }
 
     // MARK: Microphone and camera (#432, #437)
@@ -2411,6 +2550,45 @@ final class ClockReplayTests: XCTestCase {
     }
 }
 
+// Notification Center's windows as Accessibility listed them on 27.0.1 (AXIdentifier
+// values, tree order). A notification left on screen at a collapse keeps a window
+// as tall as the screen up, the same window the panel uses.
+final class NotificationCenterPanelTests: XCTestCase {
+    private let desktopWidgets = [
+        "widget-local:com.apple.Photos:com.apple.Photos.PhotosReliveWidget:com.apple.Photos.PhotosReliveWidget",
+        "widget-local:com.apple.weather:com.apple.weather.widget:com.apple.weather",
+        "widget-local:com.apple.iCal:com.apple.iCal.CalendarWidgetExtension:com.apple.CalendarWidget.CalendarMonthWidget",
+        "month-view-current-date"
+    ]
+
+    func testANotificationOnScreenIsNotThePanel() {
+        let banner = ["C4E395C9-425E-4EF6-AD7D-EA02632B947C", "title", "body", "widgets-overlay-view"]
+        XCTAssertFalse(NotificationCenterPanel.isOpen(windowUp: true, identifiers: { banner + self.desktopWidgets }),
+                       "a click on the clock must still open the panel while a notification shows")
+    }
+
+    func testThePanelWithNotificationsIsOpen() {
+        let panel = ["AXNotificationListItems", "C4E395C9-425E-4EF6-AD7D-EA02632B947C", "title", "body",
+                     "3287DC28-A6A6-4184-A7C0-F493275D9DD9", "title", "body",
+                     "widget-editor-button", "xmark", "widgets-overlay-view"]
+        XCTAssertTrue(NotificationCenterPanel.isOpen(windowUp: true, identifiers: { panel + self.desktopWidgets }))
+    }
+
+    func testTheEmptyPanelIsOpen() {
+        XCTAssertTrue(NotificationCenterPanel.isOpen(windowUp: true, identifiers: { ["widget-editor-button", "widgets-overlay-view"] }))
+    }
+
+    func testNoWindowIsClosedWithoutAskingAccessibility() {
+        var asked = false
+        XCTAssertFalse(NotificationCenterPanel.isOpen(windowUp: false, identifiers: { asked = true; return ["widget-editor-button"] }))
+        XCTAssertFalse(asked, "the window list alone answers while no window is up")
+    }
+
+    func testUnreadableAccessibilityFallsBackToTheWindow() {
+        XCTAssertTrue(NotificationCenterPanel.isOpen(windowUp: true, identifiers: { nil }))
+    }
+}
+
 // The clock-click state machine on its own, with a manual clock and a fake panel.
 final class NotificationCenterSessionTests: XCTestCase {
     private var time: ManualTime!
@@ -3534,3 +3712,45 @@ final class PresentationModeEngineTests: XCTestCase {
     }
 }
 
+
+// MARK: - Capture activity listeners (#386)
+
+// Each monitor adds CoreAudio and CoreMediaIO property listeners and removes them
+// again, on deinit and on every device change. A removal that does not match its
+// add leaves the listener (a malloc block) registered for the life of the app,
+// which is how the footprint grew to hundreds of MB over weeks of uptime.
+final class CaptureActivityMonitorTests: XCTestCase {
+    func testRemovedListenersDoNotStayRegistered() throws {
+        let cycles = 100
+        // The first monitor loads CoreMediaIO, which keeps its own blocks.
+        autoreleasepool { _ = CaptureActivityMonitor() }
+        let before = try liveMallocBlocks()
+        for _ in 0..<cycles {
+            autoreleasepool { _ = CaptureActivityMonitor() }
+        }
+        let grown = try liveMallocBlocks() - before
+        // A leak keeps at least one block per system-object listener per cycle
+        // (2 x cycles), plus one per audio process and camera.
+        XCTAssertLessThan(grown, cycles / 2, "listener blocks still registered after \(cycles) add/remove cycles: \(grown)")
+    }
+
+    // Live __NSMallocBlock__ count in this process, read with /usr/bin/heap after
+    // the main queue drains.
+    private func liveMallocBlocks() throws -> Int {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        let heap = Process()
+        heap.executableURL = URL(fileURLWithPath: "/usr/bin/heap")
+        heap.arguments = ["\(ProcessInfo.processInfo.processIdentifier)"]
+        let out = Pipe()
+        heap.standardOutput = out
+        heap.standardError = Pipe()
+        try heap.run()
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        heap.waitUntilExit()
+        let line = String(decoding: data, as: UTF8.self).split(separator: "\n").first { $0.contains("__NSMallocBlock__") }
+        guard heap.terminationStatus == 0, let count = line?.split(separator: " ").first.flatMap({ Int($0) }) else {
+            throw XCTSkip("heap could not read this process (status \(heap.terminationStatus))")
+        }
+        return count
+    }
+}

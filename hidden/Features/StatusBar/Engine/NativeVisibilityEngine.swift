@@ -66,6 +66,10 @@ import AppKit
 //   one run from elsewhere (Downloads, a build folder): it hides that app's
 //   icons although they are allowed, Hidden Bar's own arrow included, leaving no
 //   arrow to expand with. Outside an Applications folder nothing is hidden.
+//   Another app run from elsewhere (iStat Menus 7 from Application Support,
+//   #521) is hidden the same way although it is allowed; Preferences lists it
+//   with the system items macOS will not keep, and the opt-in keeps the bar
+//   whole while one sits right of the arrow.
 // Everything one held restriction allows besides Hidden Bar itself. Two holds are
 // the same only when every part matches, so a swap between lists that name the
 // same apps but different system items is not skipped.
@@ -276,6 +280,7 @@ final class NativeVisibilityEngine: MenuBarEngine {
             return completion(.unavailable)
         }
         state = .calibrating
+        startCollapseTimeout(completion)
         withLayout { [weak self] layout in
             guard let self = self else { return }
             guard let layout = layout else {
@@ -485,6 +490,12 @@ final class NativeVisibilityEngine: MenuBarEngine {
             if !layout.unnameableVisibleItems.isEmpty || !layout.unprovenVisibleSystemItems.isEmpty {
                 NSLog("NativeVisibility: visible without a bundle id \(layout.unnameableVisibleItems); visible system extras to check \(layout.unprovenVisibleSystemItems)")
             }
+            let unkeepableApps = layout.unkeepableVisibleApps
+            if !unkeepableApps.isEmpty, !Set(unkeepableApps).isSubset(of: Self.knownUnkeepableApps) {
+                NSLog("NativeVisibility: macOS hides \(unkeepableApps) although they are allowed: they run from outside an Applications folder")
+                Self.knownUnkeepableApps = Array(Set(Self.knownUnkeepableApps).union(unkeepableApps)).sorted()
+                NotificationCenter.default.post(name: .unkeepableSystemItemsChanged, object: nil)
+            }
             self.layout = layout
             body(layout)
         }
@@ -592,6 +603,33 @@ final class NativeVisibilityEngine: MenuBarEngine {
     // The controller's expand for a microphone or camera turning on, which must
     // not take focus from the app that turned it on.
     var expandBarForCapture: (() -> Void)?
+    // A collapse in flight ignores every other collapse, so one macOS never
+    // answers (the section read or the restriction) would leave the arrow and
+    // auto-collapse dead (#523, #524). Past this the engine gives up and shows
+    // the bar; a healthy collapse takes a second or two.
+    static let collapseTimeout: TimeInterval = 10
+    var scheduleCollapseTimeout: (TimeInterval, @escaping () -> Void) -> Void = {
+        DispatchQueue.main.asyncAfter(deadline: .now() + $0, execute: $1)
+    }
+    // Set by the controller to re-arm auto-collapse: its timer fired into the
+    // collapse that timed out.
+    var onCollapseTimedOut: (() -> Void)?
+    private var collapseAttempt = 0
+
+    // Leaves the bar as an activation failure does: nothing held, expanded. The
+    // dropped generation makes a late answer invalidate itself.
+    private func startCollapseTimeout(_ completion: @escaping (CollapseResult) -> Void) {
+        collapseAttempt += 1
+        let attempt = collapseAttempt
+        scheduleCollapseTimeout(Self.collapseTimeout) { [weak self] in
+            guard let self = self, attempt == self.collapseAttempt, self.state == .calibrating else { return }
+            NSLog("NativeVisibility: macOS did not answer the hide request within \(Int(Self.collapseTimeout)) s; showing the whole menu bar")
+            self.revealAll()
+            self.state = .expanded
+            completion(.unavailable)
+            self.onCollapseTimedOut?()
+        }
+    }
     var clockNow: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     var scheduleClockStep: (TimeInterval, @escaping () -> Void) -> Void = {
         DispatchQueue.main.asyncAfter(deadline: .now() + $0, execute: $1)
@@ -1050,6 +1088,7 @@ final class NativeVisibilityEngine: MenuBarEngine {
     private func holdPresentationListUnread(_ completion: @escaping (CollapseResult) -> Void) {
         guard let wanted = hold(whenBar: .collapsed, layout: nil) else { return completion(.unavailable) }
         state = .calibrating
+        startCollapseTimeout(completion)
         activate(wanted) { [weak self] succeeded in
             guard let self = self else { return }
             self.state = succeeded ? .collapsed : .expanded
@@ -1104,6 +1143,8 @@ final class NativeVisibilityEngine: MenuBarEngine {
 
     // What Preferences shows as "macOS 27 also hides".
     static private(set) var knownUnkeepableSystemItems: [String] = []
+    // Same, for apps run from outside an Applications folder, by name.
+    static private(set) var knownUnkeepableApps: [String] = []
 
     private func rememberUnkeepable(_ identifiers: [String]) {
         unkeepableSystemItems.formUnion(identifiers)
