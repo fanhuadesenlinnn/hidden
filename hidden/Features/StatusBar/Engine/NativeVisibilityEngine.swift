@@ -268,7 +268,7 @@ final class NativeVisibilityEngine: MenuBarEngine {
             logUnavailableOnce("NativeVisibility: hiding unavailable: Hidden Bar runs from outside an Applications folder, so macOS 27 would also hide its arrow",
                                detail: "macOS 27 would also hide Hidden Bar's own arrow: it hides only apps it knows by bundle id, and Hidden Bar runs from outside an Applications folder (\((Bundle.main.bundlePath as NSString).abbreviatingWithTildeInPath))")
             state = .unavailable
-            return completion(.unavailable)
+            return completion(.refused(.outsideApplications))
         }
         guard inventory.isAuthorized else {
             // The strict presentation list names no app from a read, so it holds
@@ -281,7 +281,7 @@ final class NativeVisibilityEngine: MenuBarEngine {
             // the permission is granted.
             inventory.requestAuthorization()
             logUnavailableOnce("NativeVisibility: hiding unavailable: Accessibility permission is needed to read the menu-bar sections")
-            return completion(.unavailable)
+            return completion(.refused(.accessibilityNeeded))
         }
         state = .calibrating
         startCollapseTimeout(completion)
@@ -297,10 +297,10 @@ final class NativeVisibilityEngine: MenuBarEngine {
                 return completion(.unavailable)
             }
             if !self.holdsPresentationList, self.pausesHidingForUnkeepableItems(),
-               let reason = layout.reasonToKeepBarWhole(unkeepableSystemItems: self.unkeepableSystemItems) {
-                self.logUnavailableOnce("NativeVisibility: hiding unavailable: an icon right of the arrow cannot be kept visible, so the bar stays whole", detail: reason)
+               let blocker = layout.keepWholeBlocker(unkeepableSystemItems: self.unkeepableSystemItems) {
+                self.logUnavailableOnce("NativeVisibility: hiding unavailable: an icon right of the arrow cannot be kept visible, so the bar stays whole", detail: blocker.reason)
                 self.state = .expanded
-                return completion(.unavailable)
+                return completion(.refused(.unkeepableIcons(names: blocker.names)))
             }
             guard let wanted = self.hold(whenBar: .collapsed, layout: layout) else {
                 self.state = .expanded
@@ -312,13 +312,21 @@ final class NativeVisibilityEngine: MenuBarEngine {
                     self.state = .expanded
                     return completion(.unavailable)
                 }
-                self.checkStillShown(self.holdsPresentationList ? [] : layout.unprovenVisibleSystemItems) { [weak self] shown in
+                self.checkStillShown(self.holdsPresentationList ? [] : layout.unprovenVisibleSystemItems) { [weak self] shown, hiddenByMacOS in
                     guard let self = self else { return }
                     self.state = shown ? .collapsed : .expanded
                     if shown {
                         self.setSeparatorsVisible(false)
                     }
-                    completion(shown ? .collapsed : .unavailable)
+                    // The strict presentation list hides every app whatever the sections say.
+                    let hidesNothing = !self.holdsPresentationList && layout.hasNothingToHide
+                    if shown {
+                        completion(hidesNothing ? .collapsedNothingHidden : .collapsed)
+                    } else if hiddenByMacOS.isEmpty {
+                        completion(.unavailable)
+                    } else {
+                        completion(.refused(.unkeepableIcons(names: hiddenByMacOS.map(Self.displayName(ofSystemItem:)))))
+                    }
                     if shown {
                         self.settleHold()
                     }
@@ -509,7 +517,12 @@ final class NativeVisibilityEngine: MenuBarEngine {
 
     // Activates the new restriction before dropping the old one, so switching
     // between collapsed and expanded never flashes the whole bar visible.
-    private func activate(_ hold: NativeHold, completion: @escaping (Bool) -> Void) {
+    // `keepingHeldOnFailure`: a swap that only updates the list (a launch, a lift)
+    // leaves the old restriction in place when macOS refuses the new one, since
+    // that one still hides what the user asked to hide. Not while presenting: the
+    // old list may show an app the presentation must hide, so that fails open.
+    private func activate(_ hold: NativeHold, keepingHeldOnFailure: Bool = false,
+                          completion: @escaping (Bool) -> Void) {
         generation += 1
         let generation = self.generation
         inFlightHold = hold
@@ -538,8 +551,15 @@ final class NativeVisibilityEngine: MenuBarEngine {
                 self.watchClock()
                 completion(true)
             case .failure(let error):
-                // Fail open: never leave icons hidden after an error.
+                AppLog.publicLine("NativeVisibility: macOS refused the new hide list")
                 NSLog("NativeVisibility: activation failed: \(error.localizedDescription)")
+                if keepingHeldOnFailure, self.assertion != nil, !self.presentation.isOn {
+                    // The old restriction is still the newest one, so the guards
+                    // that wait for "nothing newer in flight" keep passing.
+                    self.assertionGeneration = generation
+                    return completion(false)
+                }
+                // Fail open: never leave icons hidden after an error.
                 self.releaseAssertion()
                 self.presentationHideFailed()
                 completion(false)
@@ -662,14 +682,15 @@ final class NativeVisibilityEngine: MenuBarEngine {
         guard !isSensitiveWhilePresenting(bundle) else { return completion(.sensitive) }
         guard !assertionBundles.contains(bundle) else { return completion(.alreadyShown) }
         let before = assertionBundles
-        activate(NativeHold(systemItems: assertionSystemItems, bundles: before + [bundle])) { [weak self] succeeded in
+        activate(NativeHold(systemItems: assertionSystemItems, bundles: before + [bundle]), keepingHeldOnFailure: true) { [weak self] succeeded in
             guard let self = self else { return }
             if succeeded {
                 self.temporaryAllow = (bundle, before)
                 return completion(.lifted)
             }
-            // activate released the restriction: nothing is hidden any more.
-            self.state = .expanded
+            // The old list is still held, so nothing changed; if activate had to
+            // release it, nothing is hidden any more.
+            if self.assertion == nil { self.barOpenedAfterFailedHold() }
             completion(.unavailable)
         }
     }
@@ -777,8 +798,7 @@ final class NativeVisibilityEngine: MenuBarEngine {
                 ClockFlashTimeline.mark("reapplyEffective")
                 #endif
                 guard let self = self, !succeeded else { return }
-                self.state = .expanded
-                self.setSeparatorsVisible(true)
+                self.barOpenedAfterFailedHold()
             }
         }
         // Never leave the bar unrestricted, even if the press never reports back.
@@ -880,15 +900,26 @@ final class NativeVisibilityEngine: MenuBarEngine {
         guard superseding || generation == assertionGeneration else { return }
         guard let wanted = hold(whenBar: state, layout: layout), wanted != (inFlightHold ?? currentHold) else { return }
         NSLog("NativeVisibility: holding \(wanted.bundles.count) apps (was \(assertionBundles.count)); newly allowed \(Set(wanted.bundles).subtracting(assertionBundles).sorted())")
-        activate(wanted) { [weak self] succeeded in
+        activate(wanted, keepingHeldOnFailure: true) { [weak self] succeeded in
             guard let self = self else { return }
             guard !succeeded else {
                 // What is wanted may have changed while this was in flight.
                 return self.reconcileHold()
             }
-            self.state = .expanded
-            self.setSeparatorsVisible(true)
+            // Kept: the apps already held stay hidden, and the next launch tries again.
+            if self.assertion == nil { self.barOpenedAfterFailedHold() }
         }
+    }
+
+    // A re-activation failed and nothing is held, so the whole bar shows. The
+    // controller hears it as an expand (arrow, auto-hide timer and its retry
+    // budget); changing the state alone would leave a collapsed arrow and no timer.
+    private func barOpenedAfterFailedHold() {
+        if state == .collapsed {
+            if let notify = expandBarForCapture ?? expandBar { notify() } else { expand() }
+        }
+        state = .expanded
+        setSeparatorsVisible(true)
     }
 
     // What a hold in progress or one that has just landed may still owe
@@ -1073,9 +1104,9 @@ final class NativeVisibilityEngine: MenuBarEngine {
     private func collapseFinished(_ result: CollapseResult) {
         guard presentation.isOn else { return }
         switch result {
-        case .collapsed:
+        case .collapsed, .collapsedNothingHidden:
             presentation.hideDidSucceed()
-        case .unavailable:
+        case .unavailable, .refused:
             if holdsPresentationList { presentation.hideDidFail() }
         }
         notePhaseChange()
@@ -1120,12 +1151,13 @@ final class NativeVisibilityEngine: MenuBarEngine {
     // and the check only feeds the Preferences note. With the opt-in, the
     // restriction is dropped and later collapses keep the bar whole while such an
     // extra is right of the arrow, instead of flashing it hidden.
-    private func checkStillShown(_ expected: [String], completion: @escaping (Bool) -> Void) {
+    // `completion` also names the extras macOS hid when it fails open for them.
+    private func checkStillShown(_ expected: [String], completion: @escaping (Bool, [String]) -> Void) {
         let unchecked = expected.filter { !unkeepableSystemItems.contains($0) }
-        guard !unchecked.isEmpty else { return completion(true) }
+        guard !unchecked.isEmpty else { return completion(true, []) }
         let pauses = pausesHidingForUnkeepableItems()
         if !pauses {
-            completion(true)
+            completion(true, [])
         }
         let generation = self.generation
         scheduleVisibilityCheck { [weak self] in
@@ -1145,9 +1177,9 @@ final class NativeVisibilityEngine: MenuBarEngine {
                 guard missing.isEmpty else {
                     NSLog("NativeVisibility: macOS hid \(missing) although they sit right of the arrow; keeping the bar whole while they are there")
                     self.releaseAssertion()
-                    return completion(false)
+                    return completion(false, missing)
                 }
-                completion(true)
+                completion(true, [])
             }
         }
     }

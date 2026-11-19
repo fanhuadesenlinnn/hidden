@@ -608,13 +608,13 @@ final class FailOpenEngineTests: XCTestCase {
         inventory.items = [clock, item("com.hidden", x: 1100)]
         let hiding = visibility.succeed(0)
         XCTAssertTrue(hiding.isInvalidated, "Focus sits right of the arrow, so nothing may stay hidden")
-        XCTAssertEqual(results, [.unavailable])
+        XCTAssertEqual(results, [.refused(.unkeepableIcons(names: ["Focus"]))], "the click that found it can explain it")
         XCTAssertEqual(engine.state, .expanded)
 
         inventory.items = [focus, clock, item("com.hidden", x: 1100)]
         engine.collapse { results.append($0) }
         XCTAssertEqual(visibility.requests.count, 1, "no second flash of a restriction known to hide Focus")
-        XCTAssertEqual(results, [.unavailable, .unavailable])
+        XCTAssertEqual(results, [.refused(.unkeepableIcons(names: ["Focus"])), .refused(.unkeepableIcons(names: ["Focus"]))])
 
         inventory.items = [systemExtra("com.apple.menuextra.focusmode", x: 1100), clock]
         engine.collapse { results.append($0) }
@@ -729,6 +729,64 @@ final class UnkeepableItemsDefaultTests: XCTestCase {
     }
 }
 
+// A collapse that succeeds with every icon right of the arrow hides nothing. The
+// engine says so, so a click can explain it (the arrow sits far left, or macOS
+// moved it into its overflow).
+final class NothingToHideTests: XCTestCase {
+    private func collapse(_ inventoryItems: [MenuBarInventoryItem]) -> (result: CollapseResult?, state: MenuBarEngineState) {
+        let items = FakeItems()
+        let inventory = FakeInventory()
+        inventory.items = inventoryItems
+        let visibility = FakeVisibility()
+        let engine = NativeVisibilityEngine(items: items, inventory: inventory, visibility: visibility,
+                                            ownBundleIdentifier: "com.dwarvesv.minimalbar",
+                                            itemFrame: { $0 === items.toggleItem ? separator : alwaysHiddenSeparator },
+                                            displays: { [mainDisplay] },
+                                            isLTR: { true })
+        var result: CollapseResult?
+        engine.collapse { result = $0 }
+        visibility.succeed(0)
+        return (result, engine.state)
+    }
+
+    func testEveryIconRightOfTheArrowCollapsesAndSaysNothingIsHidden() {
+        let (result, state) = collapse([item("com.a", x: 1400), item("com.b", x: 1500)])
+        XCTAssertEqual(result, .collapsedNothingHidden)
+        XCTAssertEqual(result?.noHideReason, .everythingRightOfArrow)
+        XCTAssertEqual(state, .collapsed, "the bar still collapses: only the notice differs")
+    }
+
+    func testOneHiddenIconIsAnOrdinaryCollapse() {
+        let (result, _) = collapse([item("com.a", x: 1400), item("com.b", x: 1100)])
+        XCTAssertEqual(result, .collapsed)
+        XCTAssertNil(result?.noHideReason)
+    }
+
+    func testOnlyAnAlwaysHiddenIconIsAnOrdinaryCollapse() {
+        let (result, _) = collapse([item("com.a", x: 1400), item("com.b", x: 900)])
+        XCTAssertEqual(result, .collapsed)
+    }
+
+    func testNoThirdPartyIconsAtAllIsNotTheArrowsFault() {
+        let (result, _) = collapse([])
+        XCTAssertEqual(result, .collapsed)
+    }
+
+    func testLayoutDecidesFromSectionsNotFromWhereTheArrowIs() {
+        XCTAssertTrue(MenuBarLayout(sections: ["a": .visible]).hasNothingToHide)
+        XCTAssertFalse(MenuBarLayout(sections: ["a": .visible, "b": .hidden]).hasNothingToHide)
+        XCTAssertFalse(MenuBarLayout(sections: ["a": .visible, "b": .alwaysHidden]).hasNothingToHide)
+        XCTAssertFalse(MenuBarLayout(sections: [:]).hasNothingToHide)
+    }
+
+    func testReasonsKeepTheirNamesButShareAKind() {
+        XCTAssertEqual(NoHideReason.unkeepableIcons(names: ["A"]).kind, NoHideReason.unkeepableIcons(names: ["B"]).kind)
+        XCTAssertNotEqual(NoHideReason.accessibilityNeeded.kind, NoHideReason.outsideApplications.kind)
+        XCTAssertNil(CollapseResult.unavailable.noHideReason, "an unreadable arrow position is transient and stays silent")
+        XCTAssertNil(CollapseResult.collapsed.noHideReason)
+    }
+}
+
 final class UnkeepableItemsOptInTests: XCTestCase {
     private func collapse(_ inventoryItems: [MenuBarInventoryItem], optIn: Bool) -> (requests: Int, result: CollapseResult?) {
         let items = FakeItems()
@@ -750,14 +808,14 @@ final class UnkeepableItemsOptInTests: XCTestCase {
     func testOptInKeepsOwnerWithoutBundleIdRightOfArrowShown() {
         let (requests, result) = collapse([item(nil, x: 1400), item("com.app", x: 1100)], optIn: true)
         XCTAssertEqual(requests, 0, "macOS would hide an item the allow-list cannot name")
-        XCTAssertEqual(result, .unavailable)
+        XCTAssertEqual(result, .refused(.unkeepableIcons(names: [])))
     }
 
     func testOptInKeepsAppRunFromOutsideApplicationsRightOfArrowShown() {
         let (requests, result) = collapse([outsideApp("com.bjango.istatmenus.status", x: 1400), item("com.app", x: 1100)],
                                           optIn: true)
         XCTAssertEqual(requests, 0, "macOS would hide iStat Menus although it is allowed")
-        XCTAssertEqual(result, .unavailable)
+        XCTAssertEqual(result, .refused(.unkeepableIcons(names: ["iStat Menus"])))
         XCTAssertTrue(NativeVisibilityEngine.knownUnkeepableApps.contains("iStat Menus"))
     }
 
@@ -976,7 +1034,7 @@ final class NativeVisibilityEngineTests: XCTestCase {
         var results: [CollapseResult] = []
         engine.collapse { results.append($0) }
 
-        XCTAssertEqual(results, [.unavailable])
+        XCTAssertEqual(results, [.refused(.accessibilityNeeded)])
         XCTAssertEqual(inventory.authorizationRequests, 1)
         XCTAssertTrue(visibility.requests.isEmpty, "never guess which icons to hide")
 
@@ -1839,14 +1897,50 @@ final class AppsLaunchedWhileHidingTests: XCTestCase {
         XCTAssertEqual(visibility.requests.count, 1)
     }
 
-    func testAFailedSwapFailsOpen() {
+    // Given a collapsed bar and an app that launches
+    // When macOS refuses the swapped list
+    // Then the old list stays active, the bar stays collapsed, and a later launch swaps again
+    func testAFailedSwapKeepsTheHeldAppsHidden() {
         let engine = makeEngine()
-        _ = collapsed(engine)
+        let first = collapsed(engine)
         engine.applicationLaunched("com.new")
         XCTAssertEqual(visibility.requests.count, 2)
         guard visibility.requests.count == 2 else { return }
         visibility.fail(1)
-        XCTAssertEqual(engine.state, .expanded)
+
+        XCTAssertEqual(engine.state, .collapsed, "the apps already held stay hidden")
+        XCTAssertFalse(first.isInvalidated, "the old restriction is not dropped for one that never landed")
+        XCTAssertEqual(engine.currentHold?.bundles, ["com.visible"])
+
+        engine.applicationLaunched("com.other")
+        XCTAssertEqual(visibility.requests.count, 3, "the held restriction is still current, so the next launch swaps")
+        let second = visibility.succeed(2)
+        XCTAssertTrue(first.isInvalidated, "one restriction at a time: no leak")
+        XCTAssertFalse(second.isInvalidated)
+        XCTAssertEqual(engine.state, .collapsed)
+        XCTAssertEqual(engine.currentHold?.bundles, ["com.new", "com.other", "com.visible"])
+
+        engine.expand()
+        XCTAssertTrue(second.isInvalidated)
+        XCTAssertNil(engine.currentHold)
+    }
+
+    // Given a swap that failed and kept the old list
+    // When the user expands and collapses again
+    // Then the collapse activates a fresh list and lands collapsed
+    func testACollapseAfterAFailedSwapStillWorks() {
+        let engine = makeEngine()
+        let first = collapsed(engine)
+        engine.applicationLaunched("com.new")
+        visibility.fail(1)
+        engine.expand()
+        XCTAssertTrue(first.isInvalidated)
+
+        var results: [CollapseResult] = []
+        engine.collapse { results.append($0) }
+        visibility.succeed(visibility.requests.count - 1)
+        XCTAssertEqual(results, [.collapsed])
+        XCTAssertEqual(engine.state, .collapsed)
     }
 
     func testUserDefaultsMemoryRoundTrips() throws {
@@ -2317,7 +2411,7 @@ final class ApplicationsFolderTests: XCTestCase {
         var result: CollapseResult?
         engine.collapse { result = $0 }
 
-        XCTAssertEqual(result, .unavailable)
+        XCTAssertEqual(result, .refused(.outsideApplications))
         XCTAssertEqual(engine.state, .unavailable)
         XCTAssertTrue(visibility.requests.isEmpty, "a restriction would hide the arrow")
     }
@@ -3135,18 +3229,19 @@ final class PaletteAllowTests: XCTestCase {
 
     // Given an activation that fails
     // When the palette allows an app
-    // Then the engine fails open (nothing hidden), says unavailable, and a later collapse hides again
-    func testAFailedLiftFailsOpen() {
+    // Then nothing changes: the old list stays held, the lift says unavailable
+    func testAFailedLiftKeepsTheOldList() {
         let engine = makeEngine()
-        _ = collapsed(engine)
+        let held = collapsed(engine)
         var lift: PaletteLift?
         engine.allowTemporarily("com.hidden") { lift = $0 }
         visibility.fail(1)
         XCTAssertEqual(lift, .unavailable)
-        XCTAssertEqual(engine.state, .expanded, "nothing is hidden after a failed activation")
+        XCTAssertEqual(engine.state, .collapsed)
+        XCTAssertFalse(held.isInvalidated)
 
-        engine.collapse { _ in }
-        XCTAssertEqual(visibility.requests.count, 3, "collapse runs again instead of believing it is collapsed")
+        engine.allowTemporarily("com.hidden") { lift = $0 }
+        XCTAssertEqual(visibility.requests.count, 3, "the palette can try again")
     }
 
     // Given a user-changed bar
@@ -3505,6 +3600,32 @@ final class PresentationModeEngineTests: XCTestCase {
         XCTAssertTrue(held.isInvalidated)
         XCTAssertEqual(engine.state, .expanded)
         XCTAssertEqual(phases.last, .couldNotHide)
+    }
+
+    // Given a collapsed bar and a strict list that macOS refuses
+    // When the failure leaves nothing held
+    // Then the controller hears an expand (arrow, auto-hide timer) and a normal collapse works
+    func testRefusedStrictListTellsTheController() {
+        let engine = makeEngine()
+        var heard = 0
+        engine.expandBarForCapture = { [unowned engine] in
+            heard += 1
+            XCTAssertEqual(engine.state, .collapsed, "the controller expands a bar it still sees as collapsed")
+            engine.expand()
+        }
+        collapsed(engine)
+        engine.startPresentation()
+        visibility.fail(visibility.requests.count - 1)
+
+        XCTAssertEqual(heard, 1)
+        XCTAssertNil(engine.currentHold)
+        XCTAssertEqual(engine.state, .expanded)
+
+        var results: [CollapseResult] = []
+        engine.collapse { results.append($0) }
+        visibility.succeed(visibility.requests.count - 1)
+        XCTAssertEqual(results, [.collapsed])
+        XCTAssertEqual(engine.state, .collapsed)
     }
 
     // Given the strict list held
