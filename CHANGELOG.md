@@ -1,13 +1,18 @@
 # Changelog
 
-## Unreleased
+## v1.13.2 (2026-11-19)
 
 ### Fixed
+- macOS 27 (direct build): icons can hide even when Hidden Bar starts with an already overflowing menu bar. Failed automatic hides stop after three attempts; turning auto-hide off and on allows another three attempts, and popups from newly launched apps hold auto-hide immediately ([#549](https://github.com/consolelabs/hidden/pull/549)).
 - Auto-hide no longer waits on a screen-edge window one or two points wide, such as the hot border a KVM switch draws, and it now sees a menu bar popup that starts a few points above the bar ([#548](https://github.com/dwarvesf/hidden/issues/548)).
 - macOS 27 (direct build): clicking the clock while the bar is collapsed no longer moves the pointer to the middle of the clock. Hidden Bar now repeats the click where the pointer already is ([#547](https://github.com/dwarvesf/hidden/issues/547)).
+- macOS 27 (direct build): clicks just beside the clock, in the padding macOS also treats as the clock, now open Notification Center while the bar is collapsed. They used to highlight the clock and do nothing ([#547](https://github.com/dwarvesf/hidden/issues/547)).
+- Auto-hide no longer waits on a side panel that is as tall as the screen, such as a notes app's strip along the screen edge and the panel it opens, even when that app has a menu bar icon ([#524](https://github.com/dwarvesf/hidden/issues/524)).
+- Auto-hide no longer waits on an app's own window that was already on screen before the bar expanded, such as NotchNook, a side notes strip or a KVM border. Only a window that appears after the bar expands counts as a popup (system panels such as Control Center always count) ([#524](https://github.com/dwarvesf/hidden/issues/524)).
 - Auto-hide works while the Settings window is open. It used to wait for the window to close even with "Make room for icons while they are shown" off, and Settings opens at every launch by default, so the bar could stay expanded for good. With the option on, auto-hide still waits for the window, as the collapse would close it mid-edit.
 - Upgrading through 1.11 or 1.11.1 now removes the old "LauncherApplication" login item too. Those versions marked the cleanup done even when it failed, so the 1.13.1 cleanup skipped these Macs. With "Open Hidden Bar at login" on, Hidden Bar turns its login item off and on once more at the next launch; with it off, nothing is touched ([#456](https://github.com/dwarvesf/hidden/issues/456)).
 - macOS 27 (direct build): a plain notification no longer holds auto-hide for up to 10 minutes. macOS keeps a screen-tall Notification Center window up under a notification, and auto-hide took it for the open panel. It now checks that the panel itself is open (it has Edit Widgets) before waiting ([#524](https://github.com/dwarvesf/hidden/issues/524)).
+- Every language is complete again: Arabic, Chinese (Simplified and Traditional), Croatian, French, German, Italian, Japanese, Polish, Turkish, Ukrainian and Vietnamese. The Settings window, the notch and « button notices, the presentation mode texts and the arrow style names are now translated instead of falling back to English. Most of these translations have had no native review yet, so corrections are welcome ([#557](https://github.com/dwarvesf/hidden/issues/557)).
 
 ### Changed
 - When auto-hide holds back because of the Settings window, the new-apps prompt, Notification Center, the palette or the pointer sitting in the menu bar, the log now says which, once per expansion. The reason line ("AutoCollapse: holding for ...") is readable in Console; the app behind a popup hold and other details are in the stderr log, which the manual's "Capture a log" shows how to save. The lines for a collapse macOS never answered and for "hiding unavailable" are readable in Console too.
